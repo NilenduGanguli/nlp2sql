@@ -98,11 +98,6 @@ class GraphConfig:
     similarity_min_score: float = field(
         default_factory=lambda: float(os.getenv("SIMILARITY_MIN_SCORE", "0.75"))
     )
-    # Path to KYC business glossary JSON file
-    glossary_path: str = field(
-        default_factory=lambda: os.getenv("GLOSSARY_PATH", "data/kyc_glossary.json")
-    )
-
     def validate(self) -> None:
         self.oracle.validate()
         self.neo4j.validate()

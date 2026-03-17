@@ -9,7 +9,7 @@ Submodules:
   oracle_extractor – Async Oracle data dictionary metadata extraction
   graph_builder    – Idempotent Neo4j graph construction from extracted metadata
   traversal        – Parameterised Cypher queries for runtime schema retrieval
-  glossary_loader  – KYC business glossary ingestion (BusinessTerm + MAPS_TO)
+  glossary_loader  – BusinessTerm inference from Oracle column/table metadata
   init_graph       – Top-level orchestrator: extract → build → validate → ready
 """
 

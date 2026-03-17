@@ -38,7 +38,7 @@ from typing import Any, Dict, Optional
 from knowledge_graph.config import GraphConfig
 from knowledge_graph.oracle_extractor import OracleMetadataExtractor
 from knowledge_graph.graph_builder import GraphBuilder
-from knowledge_graph.glossary_loader import GlossaryLoader
+from knowledge_graph.glossary_loader import InferredGlossaryBuilder
 
 logging.basicConfig(
     level=logging.INFO,
@@ -199,13 +199,13 @@ def initialize_graph(
             build_stats = builder.build(metadata)
 
             # ----------------------------------------------------------
-            # Step 4: Load business glossary
+            # Step 4: Infer business glossary from Oracle metadata
             # ----------------------------------------------------------
-            logger.info("Loading KYC business glossary…")
+            logger.info("Inferring business glossary from Oracle metadata…")
             db = config.neo4j.database
             with builder._driver.session(database=db) as session:
-                loader = GlossaryLoader(session, config.glossary_path)
-                glossary_stats = loader.load()
+                glossary_builder = InferredGlossaryBuilder(session)
+                glossary_stats = glossary_builder.build(metadata)
             report["glossary"] = glossary_stats
 
             # ----------------------------------------------------------

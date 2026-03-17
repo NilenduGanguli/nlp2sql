@@ -246,7 +246,6 @@ def graph_config() -> GraphConfig:
         max_join_path_hops=4,
         similarity_levenshtein_max=2,
         similarity_min_score=0.75,
-        glossary_path="data/kyc_glossary.json",
     )
 
 
