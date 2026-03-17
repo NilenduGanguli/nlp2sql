@@ -1,0 +1,177 @@
+[
+  {
+    "term": "Customer Due Diligence",
+    "definition": "The process of verifying the identity, assessing the risk profile, and understanding the business activities of a customer before and during a business relationship, as required by AML and KYC regulations.",
+    "aliases": ["CDD", "due diligence", "customer verification", "KYC check"],
+    "domain": "KYC",
+    "sensitivity_level": "CONFIDENTIAL",
+    "mappings": [
+      {"fqn": "KYC.CUSTOMERS",     "label": "Table",  "confidence": 1.0, "mapping_type": "manual"},
+      {"fqn": "KYC.KYC_REVIEWS",   "label": "Table",  "confidence": 0.95, "mapping_type": "manual"}
+    ]
+  },
+  {
+    "term": "Beneficial Owner",
+    "definition": "A natural person who ultimately owns or controls a customer or the natural person on whose behalf a transaction is being conducted. Typically defined as owning ≥ 25% of the entity.",
+    "aliases": ["UBO", "ultimate beneficial owner", "beneficiary", "controlling person"],
+    "domain": "KYC",
+    "sensitivity_level": "CONFIDENTIAL",
+    "mappings": [
+      {"fqn": "KYC.BENEFICIAL_OWNERS",            "label": "Table",  "confidence": 1.0,  "mapping_type": "manual"},
+      {"fqn": "KYC.BENEFICIAL_OWNERS.OWNER_NAME", "label": "Column", "confidence": 0.95, "mapping_type": "manual"},
+      {"fqn": "KYC.BENEFICIAL_OWNERS.OWNERSHIP_PCT","label":"Column","confidence": 0.9,  "mapping_type": "manual"}
+    ]
+  },
+  {
+    "term": "PEP Status",
+    "definition": "Politically Exposed Person status. Indicates whether a customer holds or has held a prominent public function that exposes them to a higher risk of bribery or corruption.",
+    "aliases": ["PEP", "politically exposed person", "PEP flag", "political exposure"],
+    "domain": "KYC",
+    "sensitivity_level": "RESTRICTED",
+    "mappings": [
+      {"fqn": "KYC.PEP_STATUS",          "label": "Table",  "confidence": 1.0,  "mapping_type": "manual"},
+      {"fqn": "KYC.PEP_STATUS.IS_PEP",   "label": "Column", "confidence": 1.0,  "mapping_type": "manual"},
+      {"fqn": "KYC.PEP_STATUS.PEP_TYPE", "label": "Column", "confidence": 0.9,  "mapping_type": "manual"},
+      {"fqn": "KYC.CUSTOMERS.RISK_RATING","label": "Column", "confidence": 0.7,  "mapping_type": "fuzzy"}
+    ]
+  },
+  {
+    "term": "Risk Rating",
+    "definition": "A classification assigned to a customer indicating the level of money-laundering or financial crime risk: LOW, MEDIUM, HIGH, or VERY_HIGH. Drives the frequency and depth of KYC reviews.",
+    "aliases": ["risk score", "risk level", "risk classification", "customer risk", "AML risk"],
+    "domain": "KYC",
+    "sensitivity_level": "CONFIDENTIAL",
+    "mappings": [
+      {"fqn": "KYC.CUSTOMERS.RISK_RATING",                "label": "Column", "confidence": 1.0,  "mapping_type": "manual"},
+      {"fqn": "KYC.RISK_ASSESSMENTS.RISK_LEVEL",          "label": "Column", "confidence": 0.95, "mapping_type": "manual"},
+      {"fqn": "KYC.RISK_ASSESSMENTS.RISK_SCORE",          "label": "Column", "confidence": 0.9,  "mapping_type": "manual"},
+      {"fqn": "KYC.RISK_ASSESSMENTS",                     "label": "Table",  "confidence": 0.85, "mapping_type": "fuzzy"}
+    ]
+  },
+  {
+    "term": "KYC Review",
+    "definition": "A periodic review of a customer's KYC information, identity documents, and risk profile. Frequency is determined by the customer's risk rating (e.g., annual for high-risk, triennial for low-risk).",
+    "aliases": ["periodic review", "KYC refresh", "customer review", "AML review", "compliance review"],
+    "domain": "KYC",
+    "sensitivity_level": "CONFIDENTIAL",
+    "mappings": [
+      {"fqn": "KYC.KYC_REVIEWS",                  "label": "Table",  "confidence": 1.0,  "mapping_type": "manual"},
+      {"fqn": "KYC.KYC_REVIEWS.REVIEW_DATE",      "label": "Column", "confidence": 0.95, "mapping_type": "manual"},
+      {"fqn": "KYC.KYC_REVIEWS.NEXT_REVIEW_DATE", "label": "Column", "confidence": 0.9,  "mapping_type": "manual"},
+      {"fqn": "KYC.KYC_REVIEWS.STATUS",           "label": "Column", "confidence": 0.85, "mapping_type": "manual"}
+    ]
+  },
+  {
+    "term": "Account Manager",
+    "definition": "An employee responsible for managing the relationship with a customer and ensuring ongoing KYC compliance for that customer's accounts.",
+    "aliases": ["relationship manager", "RM", "customer manager", "client manager"],
+    "domain": "KYC",
+    "sensitivity_level": "INTERNAL",
+    "mappings": [
+      {"fqn": "KYC.EMPLOYEES",                  "label": "Table",  "confidence": 0.9,  "mapping_type": "fuzzy"},
+      {"fqn": "KYC.CUSTOMERS.ACCOUNT_MANAGER_ID","label": "Column", "confidence": 0.95, "mapping_type": "manual"}
+    ]
+  },
+  {
+    "term": "High Risk Customer",
+    "definition": "A customer with a RISK_RATING value of 'HIGH' or 'VERY_HIGH'. Subject to enhanced due diligence (EDD) requirements and more frequent KYC reviews.",
+    "aliases": ["high-risk client", "EDD customer", "enhanced due diligence", "high risk"],
+    "domain": "KYC",
+    "sensitivity_level": "CONFIDENTIAL",
+    "mappings": [
+      {"fqn": "KYC.CUSTOMERS",                  "label": "Table",  "confidence": 0.9,  "mapping_type": "fuzzy"},
+      {"fqn": "KYC.CUSTOMERS.RISK_RATING",      "label": "Column", "confidence": 1.0,  "mapping_type": "manual"}
+    ]
+  },
+  {
+    "term": "Transaction",
+    "definition": "A financial transaction recorded in the system. Includes deposits, withdrawals, wire transfers, and other monetary movements associated with a customer account.",
+    "aliases": ["payment", "transfer", "wire", "financial transaction", "movement"],
+    "domain": "KYC",
+    "sensitivity_level": "CONFIDENTIAL",
+    "mappings": [
+      {"fqn": "KYC.TRANSACTIONS",                    "label": "Table",  "confidence": 1.0,  "mapping_type": "manual"},
+      {"fqn": "KYC.TRANSACTIONS.AMOUNT",             "label": "Column", "confidence": 0.9,  "mapping_type": "manual"},
+      {"fqn": "KYC.TRANSACTIONS.TRANSACTION_DATE",   "label": "Column", "confidence": 0.9,  "mapping_type": "manual"},
+      {"fqn": "KYC.TRANSACTIONS.TRANSACTION_TYPE",   "label": "Column", "confidence": 0.85, "mapping_type": "manual"}
+    ]
+  },
+  {
+    "term": "Suspicious Activity",
+    "definition": "A transaction or pattern of transactions that raises suspicion of money laundering, fraud, or other financial crime and may require filing a Suspicious Activity Report (SAR).",
+    "aliases": ["SAR", "suspicious transaction", "red flag", "unusual activity", "AML alert"],
+    "domain": "KYC",
+    "sensitivity_level": "RESTRICTED",
+    "mappings": [
+      {"fqn": "KYC.SAR_ALERTS",               "label": "Table",  "confidence": 1.0,  "mapping_type": "manual"},
+      {"fqn": "KYC.TRANSACTIONS.IS_FLAGGED",  "label": "Column", "confidence": 0.8,  "mapping_type": "fuzzy"}
+    ]
+  },
+  {
+    "term": "Sanctions Screening",
+    "definition": "The process of checking customers and transactions against government and international sanctions lists (OFAC, UN, EU) to prevent dealing with prohibited parties.",
+    "aliases": ["sanctions check", "OFAC screening", "watchlist screening", "SDN check"],
+    "domain": "KYC",
+    "sensitivity_level": "RESTRICTED",
+    "mappings": [
+      {"fqn": "KYC.SANCTIONS_CHECKS",               "label": "Table",  "confidence": 1.0,  "mapping_type": "manual"},
+      {"fqn": "KYC.SANCTIONS_CHECKS.SCREENING_DATE","label": "Column", "confidence": 0.9,  "mapping_type": "manual"},
+      {"fqn": "KYC.SANCTIONS_CHECKS.MATCH_STATUS",  "label": "Column", "confidence": 0.9,  "mapping_type": "manual"}
+    ]
+  },
+  {
+    "term": "Account Balance",
+    "definition": "The current monetary balance of a customer's account.",
+    "aliases": ["balance", "current balance", "account value"],
+    "domain": "KYC",
+    "sensitivity_level": "CONFIDENTIAL",
+    "mappings": [
+      {"fqn": "KYC.ACCOUNTS.BALANCE",  "label": "Column", "confidence": 1.0, "mapping_type": "manual"},
+      {"fqn": "KYC.ACCOUNTS",          "label": "Table",  "confidence": 0.8, "mapping_type": "fuzzy"}
+    ]
+  },
+  {
+    "term": "Onboarding Date",
+    "definition": "The date when a customer was first onboarded and their KYC information was initially collected and verified.",
+    "aliases": ["customer since", "open date", "registration date", "enrollment date"],
+    "domain": "KYC",
+    "sensitivity_level": "INTERNAL",
+    "mappings": [
+      {"fqn": "KYC.CUSTOMERS.CREATED_DATE",     "label": "Column", "confidence": 0.9,  "mapping_type": "fuzzy"},
+      {"fqn": "KYC.ACCOUNTS.OPENED_DATE",       "label": "Column", "confidence": 0.85, "mapping_type": "fuzzy"}
+    ]
+  },
+  {
+    "term": "Nationality",
+    "definition": "The country of citizenship or nationality of a customer, used for sanctions screening and risk assessment.",
+    "aliases": ["citizenship", "country of citizenship", "country of origin"],
+    "domain": "KYC",
+    "sensitivity_level": "CONFIDENTIAL",
+    "mappings": [
+      {"fqn": "KYC.CUSTOMERS.NATIONALITY", "label": "Column", "confidence": 1.0, "mapping_type": "manual"}
+    ]
+  },
+  {
+    "term": "Enhanced Due Diligence",
+    "definition": "A more rigorous KYC process applied to high-risk customers, PEPs, and customers from high-risk jurisdictions. Requires additional documentation and more frequent reviews.",
+    "aliases": ["EDD", "enhanced KYC", "heightened due diligence"],
+    "domain": "KYC",
+    "sensitivity_level": "CONFIDENTIAL",
+    "mappings": [
+      {"fqn": "KYC.KYC_REVIEWS",                    "label": "Table",  "confidence": 0.85, "mapping_type": "fuzzy"},
+      {"fqn": "KYC.CUSTOMERS.RISK_RATING",           "label": "Column", "confidence": 0.9,  "mapping_type": "fuzzy"},
+      {"fqn": "KYC.RISK_ASSESSMENTS",               "label": "Table",  "confidence": 0.9,  "mapping_type": "fuzzy"}
+    ]
+  },
+  {
+    "term": "Document Expiry",
+    "definition": "The expiry date of an identity document (passport, ID card) used to verify a customer's identity. Expired documents trigger a KYC re-verification workflow.",
+    "aliases": ["document expiration", "ID expiry", "passport expiry", "document validity"],
+    "domain": "KYC",
+    "sensitivity_level": "CONFIDENTIAL",
+    "mappings": [
+      {"fqn": "KYC.CUSTOMER_DOCUMENTS.EXPIRY_DATE", "label": "Column", "confidence": 1.0, "mapping_type": "manual"},
+      {"fqn": "KYC.CUSTOMER_DOCUMENTS",             "label": "Table",  "confidence": 0.95,"mapping_type": "manual"}
+    ]
+  }
+]

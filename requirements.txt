@@ -1,0 +1,30 @@
+# Core graph database
+neo4j>=5.14.0
+
+# Oracle connectivity (pure Python thin mode - no Instant Client needed)
+python-oracledb>=2.0.0
+
+# Configuration & environment
+python-dotenv>=1.0.0
+pydantic>=2.5.0
+pydantic-settings>=2.1.0
+
+# Graph algorithms for JOIN_PATH computation
+networkx>=3.2.0
+
+# String similarity for SIMILAR_TO edge inference
+python-Levenshtein>=0.23.0
+
+# Caching
+redis>=5.0.0
+
+# Async support
+anyio>=4.2.0
+
+# Testing
+pytest>=7.4.0
+pytest-asyncio>=0.23.0
+pytest-mock>=3.12.0
+
+# Neo4j test container (optional for integration tests)
+testcontainers>=3.7.0
