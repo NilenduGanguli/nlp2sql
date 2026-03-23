@@ -1,0 +1,2 @@
+-- Renamed: SQL executed by 00_setup.sh via explicit sqlplus connection
+-- See docker/init/00_setup.sh

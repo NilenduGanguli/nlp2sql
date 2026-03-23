@@ -2,24 +2,23 @@
 Tests for knowledge_graph.graph_builder
 =========================================
 Verifies that the GraphBuilder:
-  1. Creates the correct Neo4j schema constraints and indexes
+  1. Creates the correct in-memory graph nodes and edges
   2. Upserts nodes and edges in the right order
   3. Correctly computes JOIN_PATH edges via the FK graph
   4. Correctly infers SIMILAR_TO edges using name-based heuristics
   5. Handles empty metadata gracefully
 
-All tests use the KYC fixture metadata (no live Neo4j required).
-The mock session captures all Cypher calls for assertion.
+All tests use the KYC fixture metadata — no external database required.
 """
 
 from __future__ import annotations
 
-from typing import List
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import pytest
 
 from knowledge_graph.graph_builder import GraphBuilder
+from knowledge_graph.graph_store import KnowledgeGraph
 from knowledge_graph.models import (
     ColumnNode, TableNode, HasForeignKeyRel, JoinPathRel, SimilarToRel
 )
@@ -27,7 +26,7 @@ from knowledge_graph.oracle_extractor import OracleMetadata
 
 
 # ---------------------------------------------------------------------------
-# JOIN_PATH computation tests (pure Python — no Neo4j needed)
+# JOIN_PATH computation tests (pure Python — no external database needed)
 # ---------------------------------------------------------------------------
 
 class TestJoinPathComputation:
@@ -191,7 +190,6 @@ class TestSimilarToComputation:
         meta = OracleMetadata()
         meta.columns = cols
         results = builder._compute_similar_to(meta)
-        # These should not produce any relationship
         assert not results
 
     def test_empty_columns_produces_no_edges(self, graph_config):
@@ -202,75 +200,81 @@ class TestSimilarToComputation:
 
 
 # ---------------------------------------------------------------------------
-# GraphBuilder.build() — Cypher statement verification via mock session
+# GraphBuilder.build() — verify the KnowledgeGraph contains correct nodes/edges
 # ---------------------------------------------------------------------------
 
-class TestGraphBuilderCypherCalls:
+class TestGraphBuilderBuildOutput:
     """
-    Verify that builder.build() issues the expected MERGE/SET Cypher statements
-    against a mock Neo4j session.
+    Verify that builder.build() populates the in-memory KnowledgeGraph correctly.
     """
 
-    def _run_build(self, graph_config, kyc_metadata):
-        """Run builder.build() with a mock Neo4j driver and return the capture."""
-        from tests.conftest import CypherCapture
-        capture = CypherCapture()
-
-        mock_session = MagicMock()
-        mock_session.run.side_effect = capture.run
-        mock_session.__enter__ = lambda s: s
-        mock_session.__exit__ = MagicMock(return_value=False)
-
-        mock_driver = MagicMock()
-        mock_driver.session.return_value.__enter__ = lambda s: mock_session
-        mock_driver.session.return_value.__exit__ = MagicMock(return_value=False)
-        mock_driver.verify_connectivity = MagicMock()
-
+    def _build(self, graph_config, kyc_metadata) -> KnowledgeGraph:
         builder = GraphBuilder(graph_config)
-        builder._driver = mock_driver
-
         builder.build(kyc_metadata)
-        return capture
+        return builder.graph
 
-    def test_schema_constraints_created(self, graph_config, kyc_metadata):
-        capture = self._run_build(graph_config, kyc_metadata)
-        assert capture.was_called_with("CREATE CONSTRAINT")
+    def test_schema_nodes_created(self, graph_config, kyc_metadata):
+        graph = self._build(graph_config, kyc_metadata)
+        assert graph.count_nodes("Schema") >= 1
+        assert graph.get_node("Schema", "KYC") is not None
 
-    def test_schema_nodes_merged(self, graph_config, kyc_metadata):
-        capture = self._run_build(graph_config, kyc_metadata)
-        assert capture.was_called_with("MERGE (s:Schema")
+    def test_table_nodes_created(self, graph_config, kyc_metadata):
+        graph = self._build(graph_config, kyc_metadata)
+        assert graph.count_nodes("Table") == len(kyc_metadata.tables)
+        assert graph.get_node("Table", "KYC.CUSTOMERS") is not None
 
-    def test_table_nodes_merged(self, graph_config, kyc_metadata):
-        capture = self._run_build(graph_config, kyc_metadata)
-        assert capture.was_called_with("MERGE (t:Table {fqn")
+    def test_column_nodes_created(self, graph_config, kyc_metadata):
+        graph = self._build(graph_config, kyc_metadata)
+        assert graph.count_nodes("Column") == len(kyc_metadata.columns)
+        assert graph.get_node("Column", "KYC.CUSTOMERS.CUSTOMER_ID") is not None
 
-    def test_column_nodes_merged(self, graph_config, kyc_metadata):
-        capture = self._run_build(graph_config, kyc_metadata)
-        assert capture.was_called_with("MERGE (c:Column {fqn")
+    def test_pk_flag_set_on_column(self, graph_config, kyc_metadata):
+        graph = self._build(graph_config, kyc_metadata)
+        col = graph.get_node("Column", "KYC.CUSTOMERS.CUSTOMER_ID")
+        assert col is not None
+        assert col.get("is_pk") is True
 
-    def test_pk_edges_created(self, graph_config, kyc_metadata):
-        capture = self._run_build(graph_config, kyc_metadata)
-        assert capture.was_called_with("HAS_PRIMARY_KEY")
+    def test_fk_flag_set_on_column(self, graph_config, kyc_metadata):
+        graph = self._build(graph_config, kyc_metadata)
+        col = graph.get_node("Column", "KYC.ACCOUNTS.CUSTOMER_ID")
+        assert col is not None
+        assert col.get("is_fk") is True
 
-    def test_fk_edges_created(self, graph_config, kyc_metadata):
-        capture = self._run_build(graph_config, kyc_metadata)
-        assert capture.was_called_with("HAS_FOREIGN_KEY")
+    def test_has_column_edges_created(self, graph_config, kyc_metadata):
+        graph = self._build(graph_config, kyc_metadata)
+        assert graph.count_edges("HAS_COLUMN") >= 1
+        cols = graph.get_out_edges("HAS_COLUMN", "KYC.CUSTOMERS")
+        assert len(cols) == 10  # 10 CUSTOMERS columns
 
-    def test_index_nodes_merged(self, graph_config, kyc_metadata):
-        capture = self._run_build(graph_config, kyc_metadata)
-        assert capture.was_called_with("MERGE (idx:Index")
-
-    def test_join_path_edges_created(self, graph_config, kyc_metadata):
-        capture = self._run_build(graph_config, kyc_metadata)
-        assert capture.was_called_with("JOIN_PATH")
-
-    def test_similar_to_edges_created(self, graph_config, kyc_metadata):
-        capture = self._run_build(graph_config, kyc_metadata)
-        assert capture.was_called_with("SIMILAR_TO")
+    def test_has_foreign_key_edges_created(self, graph_config, kyc_metadata):
+        graph = self._build(graph_config, kyc_metadata)
+        assert graph.count_edges("HAS_FOREIGN_KEY") == len(kyc_metadata.foreign_keys)
 
     def test_belongs_to_edges_created(self, graph_config, kyc_metadata):
-        capture = self._run_build(graph_config, kyc_metadata)
-        assert capture.was_called_with("BELONGS_TO")
+        graph = self._build(graph_config, kyc_metadata)
+        assert graph.count_edges("BELONGS_TO") >= len(kyc_metadata.tables)
+
+    def test_index_nodes_created(self, graph_config, kyc_metadata):
+        graph = self._build(graph_config, kyc_metadata)
+        assert graph.count_nodes("Index") == len(kyc_metadata.indexes)
+
+    def test_join_path_edges_created(self, graph_config, kyc_metadata):
+        graph = self._build(graph_config, kyc_metadata)
+        assert graph.count_edges("JOIN_PATH") > 0
+
+    def test_similar_to_edges_created(self, graph_config, kyc_metadata):
+        graph = self._build(graph_config, kyc_metadata)
+        assert graph.count_edges("SIMILAR_TO") > 0
+
+    def test_check_connectivity_always_true(self, graph_config):
+        builder = GraphBuilder(graph_config)
+        assert builder.check_connectivity() is True
+
+    def test_empty_metadata_produces_empty_graph(self, graph_config):
+        builder = GraphBuilder(graph_config)
+        builder.build(OracleMetadata())
+        assert builder.graph.count_nodes("Table") == 0
+        assert builder.graph.count_nodes("Column") == 0
 
 
 # ---------------------------------------------------------------------------

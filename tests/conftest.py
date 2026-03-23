@@ -4,9 +4,8 @@ Test fixtures for KnowledgeQL knowledge graph tests.
 Provides:
   - A complete KYC schema snapshot (OracleMetadata) built from in-memory
     fixture data — no live Oracle database required.
-  - A mock Neo4j driver / session that captures executed Cypher statements.
+  - A pre-built KnowledgeGraph for traversal query tests.
   - A mock oracledb connection for unit-testing the extractor.
-  - Convenience helpers for asserting Cypher calls.
 
 KYC Schema used in all tests
 -----------------------------
@@ -22,11 +21,13 @@ KYC Schema used in all tests
 
 from __future__ import annotations
 
-from typing import Any, Generator, List
-from unittest.mock import MagicMock, patch
+from typing import List
+from unittest.mock import MagicMock
 import pytest
 
-from knowledge_graph.config import GraphConfig, OracleConfig, Neo4jConfig
+from knowledge_graph.config import GraphConfig, OracleConfig
+from knowledge_graph.graph_builder import GraphBuilder
+from knowledge_graph.graph_store import KnowledgeGraph
 from knowledge_graph.models import (
     SchemaNode, TableNode, ColumnNode, ViewNode, IndexNode,
     ConstraintNode, ProcedureNode,
@@ -225,7 +226,7 @@ def kyc_metadata(
 
 
 # ---------------------------------------------------------------------------
-# GraphConfig fixture (no real connections needed)
+# GraphConfig and KnowledgeGraph fixtures
 # ---------------------------------------------------------------------------
 
 @pytest.fixture
@@ -237,52 +238,31 @@ def graph_config() -> GraphConfig:
             password="test_pass",
             target_schemas=["KYC"],
         ),
-        neo4j=Neo4jConfig(
-            uri="bolt://localhost:7687",
-            user="neo4j",
-            password="test_pass",
-            batch_size=100,
-        ),
         max_join_path_hops=4,
         similarity_levenshtein_max=2,
         similarity_min_score=0.75,
     )
 
 
-# ---------------------------------------------------------------------------
-# Mock Neo4j session that records Cypher calls
-# ---------------------------------------------------------------------------
-
-class CypherCapture:
-    """Captures all (cypher, params) calls made on a mock Neo4j session."""
-
-    def __init__(self):
-        self.calls: List[tuple] = []
-
-    def run(self, cypher: str, **kwargs) -> MagicMock:
-        self.calls.append((cypher, kwargs))
-        mock_result = MagicMock()
-        mock_result.single.return_value = {"cnt": 0}
-        mock_result.__iter__ = lambda s: iter([])
-        return mock_result
-
-    def cypher_texts(self) -> List[str]:
-        return [c[0] for c in self.calls]
-
-    def was_called_with(self, substring: str) -> bool:
-        return any(substring.upper() in c[0].upper() for c in self.calls)
-
-
-@pytest.fixture
-def cypher_capture() -> CypherCapture:
-    return CypherCapture()
-
-
-@pytest.fixture
-def mock_neo4j_session(cypher_capture: CypherCapture) -> MagicMock:
-    session = MagicMock()
-    session.run.side_effect = cypher_capture.run
-    return session
+@pytest.fixture(scope="session")
+def kyc_graph(
+    kyc_metadata,
+) -> KnowledgeGraph:
+    """Pre-built KnowledgeGraph from KYC fixture metadata — shared across all traversal tests."""
+    cfg = GraphConfig(
+        oracle=OracleConfig(
+            dsn="localhost:1521/XEPDB1",
+            user="test_user",
+            password="test_pass",
+            target_schemas=["KYC"],
+        ),
+        max_join_path_hops=4,
+        similarity_levenshtein_max=2,
+        similarity_min_score=0.75,
+    )
+    builder = GraphBuilder(cfg)
+    builder.build(kyc_metadata)
+    return builder.graph
 
 
 # ---------------------------------------------------------------------------
@@ -306,6 +286,5 @@ def mock_oracle_conn(kyc_metadata: OracleMetadata) -> MagicMock:
         cur.__iter__ = lambda s: iter(rows)
         return cur
 
-    # Return a generic cursor by default
     conn.cursor.return_value = _make_cursor([])
     return conn

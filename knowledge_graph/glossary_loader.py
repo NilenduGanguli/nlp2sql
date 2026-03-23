@@ -41,8 +41,7 @@ from __future__ import annotations
 import logging
 from typing import Any, Dict, List, Optional
 
-from neo4j import Session
-
+from knowledge_graph.graph_store import KnowledgeGraph
 from knowledge_graph.oracle_extractor import OracleMetadata
 
 logger = logging.getLogger(__name__)
@@ -94,15 +93,7 @@ _MAX_ENUM_VALUES = 10
 # ---------------------------------------------------------------------------
 
 def _humanize(snake_name: str) -> str:
-    """Convert UPPER_SNAKE_CASE column / table name to a business term label.
-
-    Examples::
-
-        RISK_RATING       → "Risk Rating"
-        CUSTOMER_ID       → "Customer ID"
-        DOB               → "DOB"
-        ACCOUNT_MANAGER_ID → "Account Manager ID"
-    """
+    """Convert UPPER_SNAKE_CASE column / table name to a business term label."""
     words = snake_name.upper().split("_")
     result = []
     for word in words:
@@ -133,21 +124,17 @@ def _build_definition(
     table_comment: Optional[str],
     table_fqn: str,
 ) -> tuple[str, float]:
-    """
-    Return (definition_text, confidence) for a column-level business term.
-    """
+    """Return (definition_text, confidence) for a column-level business term."""
     if comment and comment.strip():
         definition = comment.strip()
         confidence = 0.95
     elif table_comment and table_comment.strip():
-        # Synthetic: "<HumanName> in <table description>"
         definition = f"{_humanize(col_name)} in {table_comment.strip().lower()}"
         confidence = 0.65
     else:
         definition = f"{_humanize(col_name)} in {table_fqn}"
         confidence = 0.50
 
-    # Augment with enumerated valid values for categorical columns
     if (
         sample_values
         and num_distinct is not None
@@ -155,33 +142,9 @@ def _build_definition(
     ):
         vals = ", ".join(str(v) for v in sample_values[:_MAX_ENUM_VALUES])
         definition += f". Valid values: {vals}."
-        confidence = max(confidence, 0.65)  # sample values add signal
+        confidence = max(confidence, 0.65)
 
     return definition, confidence
-
-
-# ---------------------------------------------------------------------------
-# Cypher
-# ---------------------------------------------------------------------------
-
-_UPSERT_BUSINESS_TERM = """
-UNWIND $rows AS row
-MERGE (bt:BusinessTerm {term: row.term})
-SET bt.definition        = row.definition,
-    bt.aliases           = row.aliases,
-    bt.domain            = row.domain,
-    bt.sensitivity_level = row.sensitivity_level,
-    bt.last_updated      = timestamp()
-"""
-
-_UPSERT_MAPS_TO = """
-UNWIND $rows AS row
-MATCH (bt:BusinessTerm {term: row.term})
-MATCH (target {fqn: row.target_fqn})
-MERGE (bt)-[m:MAPS_TO {target_fqn: row.target_fqn}]->(target)
-SET m.confidence    = row.confidence,
-    m.mapping_type  = row.mapping_type
-"""
 
 
 # ---------------------------------------------------------------------------
@@ -190,31 +153,22 @@ SET m.confidence    = row.confidence,
 
 class InferredGlossaryBuilder:
     """
-    Builds BusinessTerm nodes and MAPS_TO edges by mining Oracle metadata.
-
-    No external glossary file is needed — terms are inferred from:
-    * ``ColumnNode.comments``   (DBA_COL_COMMENTS)
-    * ``TableNode.comments``    (DBA_TAB_COMMENTS)
-    * ``ColumnNode.sample_values`` for categorical columns
-    * Humanized column / table names when no comment is available
+    Builds BusinessTerm nodes and MAPS_TO edges by mining Oracle metadata
+    and storing them directly in the in-memory KnowledgeGraph.
 
     Usage::
 
-        builder = InferredGlossaryBuilder(session)
+        builder = InferredGlossaryBuilder(graph)
         stats = builder.build(oracle_metadata)
         # stats == {"terms": N, "mappings": M}
     """
 
-    def __init__(self, session: Session) -> None:
-        self._session = session
-
-    # ------------------------------------------------------------------
-    # Public
-    # ------------------------------------------------------------------
+    def __init__(self, graph: KnowledgeGraph) -> None:
+        self._graph = graph
 
     def build(self, metadata: OracleMetadata) -> Dict[str, int]:
         """
-        Infer all business terms from *metadata* and upsert them into Neo4j.
+        Infer all business terms from *metadata* and store them in the graph.
 
         Returns a dict with ``terms`` (distinct BusinessTerm nodes written)
         and ``mappings`` (MAPS_TO edges written).
@@ -228,8 +182,6 @@ class InferredGlossaryBuilder:
         # ---- Phase 1: column-level terms ---------------------------------
         for col in metadata.columns:
             col_upper = col.name.upper()
-
-            # Skip purely structural columns that carry no business meaning
             if col_upper in _SKIP_PURE_NAMES:
                 continue
 
@@ -250,16 +202,13 @@ class InferredGlossaryBuilder:
             )
 
             sensitivity = _infer_sensitivity(col.name)
-            # Infer domain from schema name (first segment of fqn)
             domain = col.schema.upper() if col.schema else "UNKNOWN"
 
-            # Keep the highest-confidence definition for this term
             existing = term_defs.get(term_label)
             if existing is None or confidence > existing["confidence"]:
                 term_defs[term_label] = {
                     "term": term_label,
                     "definition": definition,
-                    # aliases: original snake_case name variants
                     "aliases": list({
                         col.name.lower(),
                         col.name.upper(),
@@ -311,23 +260,29 @@ class InferredGlossaryBuilder:
                 "mapping_type": "inferred",
             })
 
-        # ---- Upsert to Neo4j ---------------------------------------------
-        # Strip internal confidence key before writing (not a graph property)
-        term_rows = [
-            {k: v for k, v in params.items() if k != "confidence"}
-            for params in term_defs.values()
-        ]
+        # ---- Write BusinessTerm nodes to graph ----------------------------
+        for term_label, params in term_defs.items():
+            node_props = {k: v for k, v in params.items() if k != "confidence"}
+            self._graph.merge_node("BusinessTerm", term_label, node_props)
 
-        if term_rows:
-            for i in range(0, len(term_rows), 500):
-                self._session.run(_UPSERT_BUSINESS_TERM, rows=term_rows[i:i + 500])
-
-        if mapping_rows:
-            for i in range(0, len(mapping_rows), 500):
-                self._session.run(_UPSERT_MAPS_TO, rows=mapping_rows[i:i + 500])
+        # ---- Write MAPS_TO edges to graph --------------------------------
+        mapping_count = 0
+        for row in mapping_rows:
+            term_label = row["term"]
+            target_fqn = row["target_fqn"]
+            # Only create the edge if the BusinessTerm node exists
+            if self._graph.get_node("BusinessTerm", term_label) is not None:
+                self._graph.merge_edge(
+                    "MAPS_TO",
+                    term_label,
+                    target_fqn,
+                    confidence=row["confidence"],
+                    mapping_type=row["mapping_type"],
+                )
+                mapping_count += 1
 
         logger.info(
             "InferredGlossaryBuilder: %d terms, %d MAPS_TO edges",
-            len(term_rows), len(mapping_rows),
+            len(term_defs), mapping_count,
         )
-        return {"terms": len(term_rows), "mappings": len(mapping_rows)}
+        return {"terms": len(term_defs), "mappings": mapping_count}

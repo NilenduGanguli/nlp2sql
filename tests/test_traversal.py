@@ -1,65 +1,24 @@
 """
 Tests for knowledge_graph.traversal
 =====================================
-Verifies that each Cypher query function:
-  1. Passes the correct parameters to the Neo4j session
-  2. Returns well-structured Python dicts
-  3. Handles empty results gracefully
+Verifies that each traversal query function:
+  1. Returns correctly structured Python dicts from the KnowledgeGraph
+  2. Handles empty / missing nodes gracefully
+  3. Applies uppercase normalisation on input FQNs
   4. Serializes DDL context correctly for LLM prompt injection
 
-All tests use Mock Neo4j sessions — no live database required.
+All tests use the pre-built kyc_graph fixture — no external database required.
 """
 
 from __future__ import annotations
 
 from typing import Any, Dict, List
-from unittest.mock import MagicMock
 
 import pytest
 
 import knowledge_graph.traversal as T
+from knowledge_graph.graph_store import KnowledgeGraph
 from knowledge_graph.traversal import serialize_context_to_ddl
-
-
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
-def _mock_session(records: List[Dict[str, Any]] = None, single: Any = None):
-    """
-    Return a mock neo4j.Session.
-    - records: iterable returned by result.__iter__
-    - single: value returned by result.single()
-    """
-    session = MagicMock()
-
-    mock_result = MagicMock()
-
-    if records is not None:
-        mock_result.__iter__ = lambda s: iter(
-            [_dict_to_record(r) for r in records]
-        )
-    else:
-        mock_result.__iter__ = lambda s: iter([])
-
-    mock_result.single.return_value = (
-        _dict_to_record(single) if single else None
-    )
-
-    session.run.return_value = mock_result
-    return session
-
-
-def _dict_to_record(d: Dict[str, Any]) -> MagicMock:
-    """Simulate a neo4j Record as a MagicMock that supports dict()."""
-    record = MagicMock()
-    record.__iter__ = lambda s: iter(d.items())
-    record.keys.return_value = list(d.keys())
-    record.__getitem__ = lambda s, k: d[k]
-    record.data.return_value = d
-    # Make dict(record) work by implementing items()
-    record.items.return_value = list(d.items())
-    return record
 
 
 # ---------------------------------------------------------------------------
@@ -67,29 +26,28 @@ def _dict_to_record(d: Dict[str, Any]) -> MagicMock:
 # ---------------------------------------------------------------------------
 
 class TestGetColumnsForTable:
-    def test_passes_fqn_uppercase(self):
-        session = _mock_session(records=[])
-        T.get_columns_for_table(session, "kyc.customers")
-        call_kwargs = session.run.call_args
-        assert call_kwargs[1]["table_fqn"] == "KYC.CUSTOMERS"
-
-    def test_returns_list(self):
-        records = [
-            {"fqn": "KYC.CUSTOMERS.CUSTOMER_ID", "name": "CUSTOMER_ID",
-             "data_type": "NUMBER", "column_id": 1, "is_pk": True,
-             "is_fk": False, "is_indexed": True, "nullable": "N",
-             "data_length": None, "precision": 10, "scale": None,
-             "default_value": None, "comments": "PK",
-             "sample_values": [], "num_distinct": 50000},
-        ]
-        session = _mock_session(records=records)
-        result = T.get_columns_for_table(session, "KYC.CUSTOMERS")
+    def test_returns_list(self, kyc_graph):
+        result = T.get_columns_for_table(kyc_graph, "KYC.CUSTOMERS")
         assert isinstance(result, list)
+        assert len(result) > 0
 
-    def test_empty_table_returns_empty_list(self):
-        session = _mock_session(records=[])
-        result = T.get_columns_for_table(session, "KYC.UNKNOWN_TABLE")
+    def test_lowercase_fqn_normalised(self, kyc_graph):
+        result = T.get_columns_for_table(kyc_graph, "kyc.customers")
+        assert len(result) > 0
+
+    def test_columns_ordered_by_column_id(self, kyc_graph):
+        result = T.get_columns_for_table(kyc_graph, "KYC.CUSTOMERS")
+        ids = [c["column_id"] for c in result]
+        assert ids == sorted(ids)
+
+    def test_empty_table_returns_empty_list(self, kyc_graph):
+        result = T.get_columns_for_table(kyc_graph, "KYC.NONEXISTENT_TABLE")
         assert result == []
+
+    def test_expected_column_present(self, kyc_graph):
+        result = T.get_columns_for_table(kyc_graph, "KYC.CUSTOMERS")
+        names = {c["name"] for c in result}
+        assert "CUSTOMER_ID" in names
 
 
 # ---------------------------------------------------------------------------
@@ -97,31 +55,28 @@ class TestGetColumnsForTable:
 # ---------------------------------------------------------------------------
 
 class TestGetTableDetail:
-    def test_returns_none_for_missing_table(self):
-        session = _mock_session()
-        session.run.return_value.single.return_value = None
-        result = T.get_table_detail(session, "KYC.NONEXISTENT")
+    def test_returns_none_for_missing_table(self, kyc_graph):
+        result = T.get_table_detail(kyc_graph, "KYC.NONEXISTENT")
         assert result is None
 
-    def test_returns_dict_for_existing_table(self):
-        table_mock = MagicMock()
-        table_mock.__iter__ = lambda s: iter({
-            "fqn": "KYC.CUSTOMERS", "name": "CUSTOMERS", "schema": "KYC",
-            "row_count": 50000, "comments": "Core customer entity"
-        }.items())
-        record = MagicMock()
-        record.__getitem__ = lambda s, k: {
-            "table": table_mock,
-            "columns": [],
-            "constraints": [],
-            "foreign_keys": [],
-        }[k]
-        session = MagicMock()
-        session.run.return_value.single.return_value = record
-        result = T.get_table_detail(session, "KYC.CUSTOMERS")
+    def test_returns_dict_for_existing_table(self, kyc_graph):
+        result = T.get_table_detail(kyc_graph, "KYC.CUSTOMERS")
         assert result is not None
         assert "table" in result
         assert "columns" in result
+        assert "constraints" in result
+        assert "foreign_keys" in result
+
+    def test_table_has_correct_name(self, kyc_graph):
+        result = T.get_table_detail(kyc_graph, "KYC.CUSTOMERS")
+        assert result["table"]["name"] == "CUSTOMERS"
+
+    def test_foreign_keys_present_for_accounts(self, kyc_graph):
+        result = T.get_table_detail(kyc_graph, "KYC.ACCOUNTS")
+        assert result is not None
+        # ACCOUNTS.CUSTOMER_ID → CUSTOMERS.CUSTOMER_ID
+        fk_cols = {fk["fk_col"] for fk in result["foreign_keys"]}
+        assert "CUSTOMER_ID" in fk_cols
 
 
 # ---------------------------------------------------------------------------
@@ -129,38 +84,28 @@ class TestGetTableDetail:
 # ---------------------------------------------------------------------------
 
 class TestFindJoinPath:
-    def test_returns_precomputed_path(self):
-        session = MagicMock()
-        precomputed = MagicMock()
-        precomputed.__getitem__ = lambda s, k: {
-            "join_columns": [{"src": "KYC.ACCOUNTS.CUSTOMER_ID",
-                                "tgt": "KYC.CUSTOMERS.CUSTOMER_ID"}],
-            "join_type": "INNER",
-            "cardinality": "N:1",
-            "weight": 1,
-        }[k]
-        session.run.return_value.single.return_value = precomputed
-        result = T.find_join_path(session, "KYC.ACCOUNTS", "KYC.CUSTOMERS")
+    def test_returns_precomputed_path(self, kyc_graph):
+        result = T.find_join_path(kyc_graph, "KYC.ACCOUNTS", "KYC.CUSTOMERS")
         assert result is not None
-        assert result["weight"] == 1
         assert result["source"] == "precomputed"
+        assert result["weight"] == 1
 
-    def test_returns_none_when_no_path(self):
-        session = MagicMock()
-        session.run.return_value.single.return_value = None
-        result = T.find_join_path(session, "KYC.TABLE_X", "KYC.TABLE_Y")
+    def test_two_hop_path_found(self, kyc_graph):
+        result = T.find_join_path(kyc_graph, "KYC.TRANSACTIONS", "KYC.CUSTOMERS")
+        assert result is not None
+        assert result["weight"] == 2
+
+    def test_returns_none_when_no_path(self, kyc_graph):
+        # Build a small graph with isolated tables
+        g = KnowledgeGraph()
+        g.merge_node("Table", "S.TABLE_A", {"name": "TABLE_A", "schema": "S", "fqn": "S.TABLE_A"})
+        g.merge_node("Table", "S.TABLE_B", {"name": "TABLE_B", "schema": "S", "fqn": "S.TABLE_B"})
+        result = T.find_join_path(g, "S.TABLE_A", "S.TABLE_B")
         assert result is None
 
-    def test_uppercase_fqn_passed(self):
-        session = MagicMock()
-        session.run.return_value.single.return_value = None
-        T.find_join_path(session, "kyc.accounts", "kyc.customers")
-        # Both queries should be called with upper-case FQNs
-        for call in session.run.call_args_list:
-            args, kwargs = call
-            if "table1_fqn" in kwargs:
-                assert kwargs["table1_fqn"] == "KYC.ACCOUNTS"
-                assert kwargs["table2_fqn"] == "KYC.CUSTOMERS"
+    def test_lowercase_fqn_normalised(self, kyc_graph):
+        result = T.find_join_path(kyc_graph, "kyc.accounts", "kyc.customers")
+        assert result is not None
 
 
 # ---------------------------------------------------------------------------
@@ -168,34 +113,23 @@ class TestFindJoinPath:
 # ---------------------------------------------------------------------------
 
 class TestResolveBusinessTerm:
-    def test_glossary_match_returned_first(self):
-        records = [
-            {"term": "Risk Rating", "definition": "Risk classification",
-             "sensitivity_level": "CONFIDENTIAL",
-             "target_labels": ["Column"], "target_fqn": "KYC.CUSTOMERS.RISK_RATING",
-             "target_name": "RISK_RATING", "confidence": 1.0, "mapping_type": "manual"},
-        ]
-        session = _mock_session(records=records)
-        result = T.resolve_business_term(session, "Risk Rating")
-        assert len(result) >= 1
-        assert result[0]["term"] == "Risk Rating"
-
-    def test_empty_glossary_falls_back_to_name_search(self):
-        session = MagicMock()
-        session.run.return_value.__iter__ = lambda s: iter([])
-        session.run.return_value.single.return_value = None
-        # Second call to fallback name search
-        result = T.resolve_business_term(session, "obscure_term")
-        # Should not raise; returns list (possibly empty)
+    def test_returns_list(self, kyc_graph):
+        result = T.resolve_business_term(kyc_graph, "customer")
         assert isinstance(result, list)
 
-    def test_regex_pattern_built_from_term(self):
-        session = _mock_session(records=[])
-        T.resolve_business_term(session, "Customer")
-        # The pattern should contain the original term
-        call_args = session.run.call_args_list[0]
-        _, kwargs = call_args
-        assert "customer" in kwargs.get("search_pattern", "").lower()
+    def test_fallback_name_search_works(self, kyc_graph):
+        # "customer" appears in many table/column names
+        result = T.resolve_business_term(kyc_graph, "customer")
+        assert len(result) > 0
+
+    def test_nonexistent_term_returns_empty_or_list(self, kyc_graph):
+        result = T.resolve_business_term(kyc_graph, "xyzzy_nonexistent_term_abc")
+        assert isinstance(result, list)
+
+    def test_name_search_result_has_expected_keys(self, kyc_graph):
+        results = T.resolve_business_term(kyc_graph, "customer")
+        for r in results:
+            assert "fqn" in r or "term" in r
 
 
 # ---------------------------------------------------------------------------
@@ -203,61 +137,27 @@ class TestResolveBusinessTerm:
 # ---------------------------------------------------------------------------
 
 class TestGetContextSubgraph:
-    def _make_context_record(self):
-        table_node = MagicMock()
-        table_node.__iter__ = lambda s: iter({
-            "fqn": "KYC.CUSTOMERS",
-            "name": "CUSTOMERS",
-            "schema": "KYC",
-            "row_count": 50000,
-            "comments": "Core customer entity",
-        }.items())
-
-        col_node = MagicMock()
-        col_node.__iter__ = lambda s: iter({
-            "fqn": "KYC.CUSTOMERS.CUSTOMER_ID",
-            "name": "CUSTOMER_ID",
-            "data_type": "NUMBER",
-            "data_length": None,
-            "precision": 10,
-            "scale": None,
-            "nullable": "N",
-            "column_id": 1,
-            "is_pk": True,
-            "is_fk": False,
-            "is_indexed": True,
-            "comments": "Primary key",
-            "default_value": None,
-            "sample_values": ["1001", "1002"],
-        }.items())
-
-        record = MagicMock()
-        record.__getitem__ = lambda s, k: {
-            "table_node": table_node,
-            "columns": [col_node],
-            "foreign_keys": [],
-            "indexes": [],
-            "constraints": [],
-            "business_terms": [],
-        }[k]
-        return record
-
-    def test_returns_list(self):
-        session = MagicMock()
-        session.run.return_value.__iter__ = lambda s: iter(
-            [self._make_context_record()]
-        )
-        result = T.get_context_subgraph(session, ["KYC.CUSTOMERS"])
+    def test_returns_list(self, kyc_graph):
+        result = T.get_context_subgraph(kyc_graph, ["KYC.CUSTOMERS"])
         assert isinstance(result, list)
+        assert len(result) == 1
 
-    def test_uppercase_fqns_passed(self):
-        session = MagicMock()
-        session.run.return_value.__iter__ = lambda s: iter([])
-        T.get_context_subgraph(session, ["kyc.customers", "kyc.accounts"])
-        _, kwargs = session.run.call_args
-        fqns = kwargs.get("table_fqns", [])
-        assert "KYC.CUSTOMERS" in fqns
-        assert "KYC.ACCOUNTS" in fqns
+    def test_uppercase_fqns_normalised(self, kyc_graph):
+        result = T.get_context_subgraph(kyc_graph, ["kyc.customers", "kyc.accounts"])
+        assert len(result) == 2
+
+    def test_context_contains_columns(self, kyc_graph):
+        result = T.get_context_subgraph(kyc_graph, ["KYC.CUSTOMERS"])
+        assert len(result[0]["columns"]) > 0
+
+    def test_context_contains_foreign_keys(self, kyc_graph):
+        result = T.get_context_subgraph(kyc_graph, ["KYC.ACCOUNTS"])
+        fk_cols = {fk["fk_col"] for fk in result[0]["foreign_keys"]}
+        assert "CUSTOMER_ID" in fk_cols
+
+    def test_missing_table_omitted(self, kyc_graph):
+        result = T.get_context_subgraph(kyc_graph, ["KYC.NONEXISTENT"])
+        assert result == []
 
 
 class TestSerializeContextToDDL:
@@ -344,19 +244,23 @@ class TestSerializeContextToDDL:
 # ---------------------------------------------------------------------------
 
 class TestSearchSchema:
-    def test_search_returns_list(self):
-        session = _mock_session(records=[])
-        result = T.search_schema(session, "customer")
+    def test_search_returns_list(self, kyc_graph):
+        result = T.search_schema(kyc_graph, "customer")
         assert isinstance(result, list)
 
-    def test_search_falls_back_on_fulltext_error(self):
-        session = MagicMock()
-        # First call raises (fulltext index not available), second works
-        fallback_result = MagicMock()
-        fallback_result.__iter__ = lambda s: iter([])
-        session.run.side_effect = [Exception("No fulltext index"), fallback_result]
-        result = T.search_schema(session, "customer")
-        assert isinstance(result, list)
+    def test_search_finds_table(self, kyc_graph):
+        result = T.search_schema(kyc_graph, "CUSTOMERS")
+        fqns = [r["fqn"] for r in result]
+        assert "KYC.CUSTOMERS" in fqns
+
+    def test_search_finds_column(self, kyc_graph):
+        result = T.search_schema(kyc_graph, "RISK_RATING")
+        names = [r["name"] for r in result]
+        assert "RISK_RATING" in names
+
+    def test_no_match_returns_empty(self, kyc_graph):
+        result = T.search_schema(kyc_graph, "xyzzy_no_such_thing_abc123")
+        assert result == []
 
 
 # ---------------------------------------------------------------------------
@@ -364,16 +268,18 @@ class TestSearchSchema:
 # ---------------------------------------------------------------------------
 
 class TestGetIndexHints:
-    def test_uppercase_fqns(self):
-        session = _mock_session(records=[])
-        T.get_index_hints(session, ["kyc.customers.risk_rating"])
-        _, kwargs = session.run.call_args
-        assert "KYC.CUSTOMERS.RISK_RATING" in kwargs.get("column_fqns", [])
-
-    def test_returns_list(self):
-        session = _mock_session(records=[])
-        result = T.get_index_hints(session, ["KYC.CUSTOMERS.RISK_RATING"])
+    def test_uppercase_fqns(self, kyc_graph):
+        result = T.get_index_hints(kyc_graph, ["kyc.customers.risk_rating"])
         assert isinstance(result, list)
+
+    def test_returns_index_for_indexed_column(self, kyc_graph):
+        result = T.get_index_hints(kyc_graph, ["KYC.CUSTOMERS.CUSTOMER_ID"])
+        assert len(result) > 0
+        assert any(r["column_fqn"] == "KYC.CUSTOMERS.CUSTOMER_ID" for r in result)
+
+    def test_returns_empty_for_unindexed_fqn(self, kyc_graph):
+        result = T.get_index_hints(kyc_graph, ["KYC.NONEXISTENT.COLUMN"])
+        assert result == []
 
 
 # ---------------------------------------------------------------------------
@@ -381,14 +287,25 @@ class TestGetIndexHints:
 # ---------------------------------------------------------------------------
 
 class TestListAllTables:
-    def test_schema_filter_applied(self):
-        session = _mock_session(records=[])
-        T.list_all_tables(session, schema="kyc", skip=0, limit=50)
-        _, kwargs = session.run.call_args
-        assert kwargs.get("schema") == "KYC"
+    def test_returns_all_kyc_tables(self, kyc_graph):
+        result = T.list_all_tables(kyc_graph)
+        assert len(result) == 8  # 8 KYC tables in fixture
 
-    def test_no_schema_filter_passes_none(self):
-        session = _mock_session(records=[])
-        T.list_all_tables(session)
-        _, kwargs = session.run.call_args
-        assert kwargs.get("schema") is None
+    def test_schema_filter_applied(self, kyc_graph):
+        result = T.list_all_tables(kyc_graph, schema="kyc")
+        assert len(result) == 8
+
+    def test_wrong_schema_returns_empty(self, kyc_graph):
+        result = T.list_all_tables(kyc_graph, schema="NONEXISTENT")
+        assert result == []
+
+    def test_pagination_skip(self, kyc_graph):
+        all_tables = T.list_all_tables(kyc_graph)
+        page = T.list_all_tables(kyc_graph, skip=2, limit=3)
+        assert len(page) == 3
+        assert page[0]["fqn"] == all_tables[2]["fqn"]
+
+    def test_results_sorted_by_name(self, kyc_graph):
+        result = T.list_all_tables(kyc_graph)
+        names = [r["name"] for r in result]
+        assert names == sorted(names)

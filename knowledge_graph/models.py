@@ -1,14 +1,14 @@
 """
 Typed dataclasses representing every node label and relationship type
-in the KnowledgeQL Neo4j knowledge graph.
+in the KnowledgeQL knowledge graph.
 
 Naming convention
 -----------------
-  *Node    – represents a Neo4j node label
-  *Rel     – represents a Neo4j relationship type
+  *Node    – represents a graph node label
+  *Rel     – represents a graph relationship type
 
 Each class exposes a ``to_cypher_params()`` method that returns a plain
-dictionary suitable for passing as Cypher query parameters.
+dictionary of properties suitable for storing in the KnowledgeGraph.
 """
 
 from __future__ import annotations
@@ -181,7 +181,7 @@ class ViewNode:
             "fqn": self.fqn,
             "name": self.name.upper(),
             "schema": self.schema.upper(),
-            # Truncate very long view text to avoid Neo4j property size limit
+            # Truncate very long view text to avoid oversized property values
             "view_text": (self.view_text or "")[:4000],
             "is_materialized": self.is_materialized,
             "refresh_mode": self.refresh_mode,

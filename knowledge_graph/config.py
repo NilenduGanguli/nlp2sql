@@ -2,7 +2,8 @@
 Configuration for the KnowledgeQL knowledge graph pipeline.
 
 All values are sourced from environment variables (or a .env file).
-Use GraphConfig as the single entry point — it composes OracleConfig and Neo4jConfig.
+Use GraphConfig as the single entry point — it composes OracleConfig and
+tuning knobs for the in-memory graph algorithms.
 """
 
 from __future__ import annotations
@@ -55,36 +56,16 @@ class OracleConfig:
 
 
 @dataclass
-class Neo4jConfig:
-    """Connection settings for the Neo4j knowledge graph database."""
-
-    uri: str = field(default_factory=lambda: os.getenv("NEO4J_URI", "bolt://localhost:7687"))
-    user: str = field(default_factory=lambda: os.getenv("NEO4J_USER", "neo4j"))
-    password: str = field(default_factory=lambda: os.getenv("NEO4J_PASSWORD", ""))
-    database: str = field(default_factory=lambda: os.getenv("NEO4J_DATABASE", "neo4j"))
-    # Number of nodes/relationships to write per Cypher UNWIND batch
-    batch_size: int = field(
-        default_factory=lambda: int(os.getenv("NEO4J_BATCH_SIZE", "500"))
-    )
-
-    def validate(self) -> None:
-        if not self.uri:
-            raise ValueError("NEO4J_URI is required")
-        if not self.password:
-            raise ValueError("NEO4J_PASSWORD is required")
-
-
-@dataclass
 class GraphConfig:
     """
     Top-level configuration for the knowledge graph pipeline.
 
-    Composes OracleConfig and Neo4jConfig and adds tuning knobs for
-    relationship inference (JOIN_PATH depth, SIMILAR_TO threshold).
+    Composes OracleConfig and adds tuning knobs for relationship inference
+    (JOIN_PATH depth, SIMILAR_TO threshold). No external graph database
+    configuration is needed — the graph is stored in-memory using Python.
     """
 
     oracle: OracleConfig = field(default_factory=OracleConfig)
-    neo4j: Neo4jConfig = field(default_factory=Neo4jConfig)
 
     # Maximum FK-hop depth for pre-computed JOIN_PATH edges
     max_join_path_hops: int = field(
@@ -98,6 +79,6 @@ class GraphConfig:
     similarity_min_score: float = field(
         default_factory=lambda: float(os.getenv("SIMILARITY_MIN_SCORE", "0.75"))
     )
+
     def validate(self) -> None:
         self.oracle.validate()
-        self.neo4j.validate()

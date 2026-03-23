@@ -1,0 +1,22 @@
+services:
+  oracle:
+    image: gvenzl/oracle-free:latest
+    container_name: nlp2sql_oracle
+    ports:
+      - "1521:1521"
+    environment:
+      ORACLE_PASSWORD: Oracle123
+      APP_USER: kyc
+      APP_USER_PASSWORD: KycPassword1
+    volumes:
+      - ./init:/docker-entrypoint-initdb.d
+      - oracle_data:/opt/oracle/oradata
+    healthcheck:
+      test: ["CMD", "healthcheck.sh"]
+      interval: 20s
+      timeout: 20s
+      retries: 15
+      start_period: 120s
+
+volumes:
+  oracle_data:

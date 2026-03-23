@@ -582,8 +582,12 @@ class OracleMetadataExtractor:
                 p.owner,
                 p.object_name,
                 p.object_type,
-                p.status
+                NVL(o.status, 'VALID') AS status
             FROM {prefix}_PROCEDURES p
+            LEFT JOIN {prefix}_OBJECTS o
+                ON o.owner = p.owner
+               AND o.object_name = p.object_name
+               AND o.object_type = p.object_type
             WHERE {schema_clause}
               AND p.object_type IN ('PROCEDURE', 'FUNCTION', 'PACKAGE')
             ORDER BY p.owner, p.object_type, p.object_name
@@ -623,7 +627,7 @@ class OracleMetadataExtractor:
             ORDER BY s.owner, s.synonym_name
         """
         synonyms: List[SynonymNode] = []
-        binds = self._bind_schemas(schemas) + self._bind_schemas(schemas)
+        binds = self._bind_schemas(schemas)
         with conn.cursor() as cur:
             try:
                 cur.execute(sql, binds)

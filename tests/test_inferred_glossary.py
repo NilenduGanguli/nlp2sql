@@ -10,13 +10,11 @@ Verifies:
   - MAPS_TO edges are created for every column / table
   - Deduplication: only the highest-confidence definition is kept per term
   - Table-level terms are generated when a table has a comment
-  - Correct Cypher is executed with the right row structure
 """
 
 from __future__ import annotations
 
 from typing import Any, Dict, List
-from unittest.mock import MagicMock, call
 
 import pytest
 
@@ -26,6 +24,7 @@ from knowledge_graph.glossary_loader import (
     _infer_sensitivity,
     _build_definition,
 )
+from knowledge_graph.graph_store import KnowledgeGraph
 from knowledge_graph.oracle_extractor import OracleMetadata
 from knowledge_graph.models import ColumnNode, TableNode
 
@@ -151,10 +150,8 @@ def _make_metadata(
     return meta
 
 
-def _mock_session():
-    session = MagicMock()
-    session.run.return_value = MagicMock()
-    return session
+def _make_graph() -> KnowledgeGraph:
+    return KnowledgeGraph()
 
 
 class TestInferredGlossaryBuilderTerms:
@@ -164,17 +161,16 @@ class TestInferredGlossaryBuilderTerms:
                          num_distinct=4,
                          sample_values=["LOW", "MEDIUM", "HIGH", "VERY_HIGH"])
         meta = _make_metadata(columns=[col])
-        session = _mock_session()
+        graph = _make_graph()
 
-        builder = InferredGlossaryBuilder(session)
-        stats = builder.build(meta)
+        stats = InferredGlossaryBuilder(graph).build(meta)
 
         assert stats["terms"] == 1
         assert stats["mappings"] == 1
 
-        term_rows = session.run.call_args_list[0][1]["rows"]
-        assert term_rows[0]["term"] == "Risk Rating"
-        assert "risk classification" in term_rows[0]["definition"].lower()
+        term = graph.get_node("BusinessTerm", "Risk Rating")
+        assert term is not None
+        assert "risk classification" in term["definition"].lower()
 
     def test_categorical_values_in_definition(self):
         col = ColumnNode("KYC", "CUSTOMERS", "RISK_RATING", "VARCHAR2",
@@ -182,71 +178,69 @@ class TestInferredGlossaryBuilderTerms:
                          num_distinct=4,
                          sample_values=["LOW", "MEDIUM", "HIGH", "VERY_HIGH"])
         meta = _make_metadata(columns=[col])
-        session = _mock_session()
+        graph = _make_graph()
 
-        builder = InferredGlossaryBuilder(session)
-        builder.build(meta)
+        InferredGlossaryBuilder(graph).build(meta)
 
-        term_rows = session.run.call_args_list[0][1]["rows"]
-        assert "LOW" in term_rows[0]["definition"]
+        term = graph.get_node("BusinessTerm", "Risk Rating")
+        assert "LOW" in term["definition"]
 
     def test_structural_column_skipped(self):
         col = ColumnNode("KYC", "CUSTOMERS", "ID", "NUMBER")  # in _SKIP_PURE_NAMES
         meta = _make_metadata(columns=[col])
-        session = _mock_session()
+        graph = _make_graph()
 
-        builder = InferredGlossaryBuilder(session)
-        stats = builder.build(meta)
+        stats = InferredGlossaryBuilder(graph).build(meta)
 
         assert stats["terms"] == 0
         assert stats["mappings"] == 0
-        session.run.assert_not_called()
+        assert graph.count_nodes("BusinessTerm") == 0
 
     def test_sensitivity_written_for_confidential_column(self):
         col = ColumnNode("KYC", "CUSTOMERS", "ACCOUNT_BALANCE", "NUMBER",
                          comments="Balance of the account")
         meta = _make_metadata(columns=[col])
-        session = _mock_session()
+        graph = _make_graph()
 
-        InferredGlossaryBuilder(session).build(meta)
+        InferredGlossaryBuilder(graph).build(meta)
 
-        term_rows = session.run.call_args_list[0][1]["rows"]
-        assert term_rows[0]["sensitivity_level"] == "CONFIDENTIAL"
+        term = graph.get_node("BusinessTerm", "Account Balance")
+        assert term["sensitivity_level"] == "CONFIDENTIAL"
 
     def test_domain_inferred_from_schema(self):
         col = ColumnNode("FINANCE", "ACCOUNTS", "BALANCE", "NUMBER",
                          comments="Account balance")
         meta = _make_metadata(columns=[col])
-        session = _mock_session()
+        graph = _make_graph()
 
-        InferredGlossaryBuilder(session).build(meta)
+        InferredGlossaryBuilder(graph).build(meta)
 
-        term_rows = session.run.call_args_list[0][1]["rows"]
-        assert term_rows[0]["domain"] == "FINANCE"
+        term = graph.get_node("BusinessTerm", "Balance")
+        assert term["domain"] == "FINANCE"
 
     def test_table_level_term_created_when_comment_present(self):
         table = TableNode("KYC", "CUSTOMERS",
                           comments="Core customer entity for KYC compliance")
         meta = _make_metadata(tables=[table])
-        session = _mock_session()
+        graph = _make_graph()
 
-        stats = InferredGlossaryBuilder(session).build(meta)
+        stats = InferredGlossaryBuilder(graph).build(meta)
 
         assert stats["terms"] == 1
         assert stats["mappings"] == 1
-        term_rows = session.run.call_args_list[0][1]["rows"]
-        assert term_rows[0]["term"] == "Customers"
-        assert "KYC compliance" in term_rows[0]["definition"]
+        term = graph.get_node("BusinessTerm", "Customers")
+        assert term is not None
+        assert "KYC compliance" in term["definition"]
 
     def test_table_without_comment_not_indexed(self):
         table = TableNode("KYC", "STAGING_TMP")  # no comment
         meta = _make_metadata(tables=[table])
-        session = _mock_session()
+        graph = _make_graph()
 
-        stats = InferredGlossaryBuilder(session).build(meta)
+        stats = InferredGlossaryBuilder(graph).build(meta)
 
         assert stats["terms"] == 0
-        session.run.assert_not_called()
+        assert graph.count_nodes("BusinessTerm") == 0
 
     def test_deduplication_keeps_highest_confidence(self):
         """Same humanized term from two columns: only one term node, two MAPS_TO."""
@@ -254,39 +248,40 @@ class TestInferredGlossaryBuilderTerms:
                           comments="Primary customer identifier")  # confidence 0.95
         col2 = ColumnNode("KYC", "ACCOUNTS", "CUSTOMER_ID", "NUMBER")  # no comment → 0.50
         meta = _make_metadata(columns=[col1, col2])
-        session = _mock_session()
+        graph = _make_graph()
 
-        stats = InferredGlossaryBuilder(session).build(meta)
+        stats = InferredGlossaryBuilder(graph).build(meta)
 
         assert stats["terms"] == 1     # one distinct term "Customer ID"
         assert stats["mappings"] == 2  # one edge per column
 
-        term_rows = session.run.call_args_list[0][1]["rows"]
-        # Best definition is the one from col1 (higher confidence)
-        assert "Primary customer identifier" in term_rows[0]["definition"]
+        term = graph.get_node("BusinessTerm", "Customer ID")
+        # Best definition is from col1 (higher confidence)
+        assert "Primary customer identifier" in term["definition"]
 
-    def test_maps_to_rows_contain_correct_fqns(self):
+    def test_maps_to_edges_contain_correct_fqns(self):
         col = ColumnNode("KYC", "CUSTOMERS", "RISK_RATING", "VARCHAR2",
                          comments="Risk class")
         meta = _make_metadata(columns=[col])
-        session = _mock_session()
+        graph = _make_graph()
 
-        InferredGlossaryBuilder(session).build(meta)
+        InferredGlossaryBuilder(graph).build(meta)
 
-        mapping_rows = session.run.call_args_list[1][1]["rows"]
-        assert mapping_rows[0]["target_fqn"] == "KYC.CUSTOMERS.RISK_RATING"
-        assert mapping_rows[0]["mapping_type"] == "inferred"
+        edges = graph.get_out_edges("MAPS_TO", "Risk Rating")
+        assert len(edges) == 1
+        assert edges[0]["_to"] == "KYC.CUSTOMERS.RISK_RATING"
+        assert edges[0]["mapping_type"] == "inferred"
 
     def test_aliases_include_snake_and_upper(self):
         col = ColumnNode("KYC", "CUSTOMERS", "RISK_RATING", "VARCHAR2",
                          comments="Risk class")
         meta = _make_metadata(columns=[col])
-        session = _mock_session()
+        graph = _make_graph()
 
-        InferredGlossaryBuilder(session).build(meta)
+        InferredGlossaryBuilder(graph).build(meta)
 
-        term_rows = session.run.call_args_list[0][1]["rows"]
-        aliases = term_rows[0]["aliases"]
+        term = graph.get_node("BusinessTerm", "Risk Rating")
+        aliases = term["aliases"]
         assert "risk_rating" in aliases
         assert "RISK_RATING" in aliases
 
@@ -299,9 +294,9 @@ class TestInferredGlossaryBuilderTerms:
             ColumnNode("KYC", "ACCOUNTS", "RISK_RATING", "VARCHAR2"),  # duplicate term
         ]
         meta = _make_metadata(columns=cols)
-        session = _mock_session()
+        graph = _make_graph()
 
-        stats = InferredGlossaryBuilder(session).build(meta)
+        stats = InferredGlossaryBuilder(graph).build(meta)
 
         assert stats["terms"] == 2     # RISK_RATING + NATIONALITY (deduplicated)
         assert stats["mappings"] == 3  # one edge per column occurrence

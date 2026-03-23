@@ -1,19 +1,21 @@
 """
 KnowledgeQL Knowledge Graph Package
 ====================================
-Manages the Neo4j knowledge graph constructed from Oracle schema metadata.
+Manages the in-memory knowledge graph constructed from Oracle schema metadata.
 
 Submodules:
-  config       – Environment-driven configuration dataclasses
-  models       – Typed dataclasses for every node and relationship type
-  oracle_extractor – Async Oracle data dictionary metadata extraction
-  graph_builder    – Idempotent Neo4j graph construction from extracted metadata
-  traversal        – Parameterised Cypher queries for runtime schema retrieval
+  config           – Environment-driven configuration dataclasses
+  models           – Typed dataclasses for every node and relationship type
+  oracle_extractor – Oracle data dictionary metadata extraction
+  graph_store      – In-memory property graph (KnowledgeGraph)
+  graph_builder    – Builds the KnowledgeGraph from extracted metadata
+  traversal        – Query functions for runtime schema retrieval
   glossary_loader  – BusinessTerm inference from Oracle column/table metadata
   init_graph       – Top-level orchestrator: extract → build → validate → ready
 """
 
-from knowledge_graph.config import GraphConfig, OracleConfig, Neo4jConfig
+from knowledge_graph.config import GraphConfig, OracleConfig
+from knowledge_graph.graph_store import KnowledgeGraph
 from knowledge_graph.models import (
     SchemaNode, TableNode, ColumnNode, ViewNode, IndexNode,
     ConstraintNode, ProcedureNode, SynonymNode, SequenceNode,
@@ -24,7 +26,7 @@ from knowledge_graph.models import (
 )
 
 __all__ = [
-    "GraphConfig", "OracleConfig", "Neo4jConfig",
+    "GraphConfig", "OracleConfig", "KnowledgeGraph",
     "SchemaNode", "TableNode", "ColumnNode", "ViewNode", "IndexNode",
     "ConstraintNode", "ProcedureNode", "SynonymNode", "SequenceNode",
     "BusinessTermNode", "QueryPatternNode",

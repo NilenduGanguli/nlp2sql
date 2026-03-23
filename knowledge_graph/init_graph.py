@@ -6,10 +6,10 @@ BEFORE the application begins accepting user queries.
 
 Pipeline sequence
 -----------------
-  1. Health-check Oracle, Neo4j (fail-fast if unreachable)
+  1. Health-check Oracle (fail-fast if unreachable)
   2. Extract all Oracle metadata (tables, columns, FKs, views, …)
-  3. Build the Neo4j knowledge graph (Schema → Table → Column → … nodes)
-  4. Load the KYC business glossary (BusinessTerm + MAPS_TO edges)
+  3. Build the in-memory knowledge graph (Schema → Table → Column → … nodes)
+  4. Infer the KYC business glossary (BusinessTerm + MAPS_TO edges)
   5. Validate the graph (consistency checks)
   6. Print a summary report
 
@@ -20,7 +20,7 @@ Usage (CLI)::
 Usage (programmatic)::
 
     from knowledge_graph.init_graph import initialize_graph
-    stats = initialize_graph()
+    graph, stats = initialize_graph()
 
 Incremental refresh (only changed objects since last run)::
 
@@ -33,11 +33,12 @@ import argparse
 import logging
 import sys
 import time
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Tuple
 
 from knowledge_graph.config import GraphConfig
 from knowledge_graph.oracle_extractor import OracleMetadataExtractor
 from knowledge_graph.graph_builder import GraphBuilder
+from knowledge_graph.graph_store import KnowledgeGraph
 from knowledge_graph.glossary_loader import InferredGlossaryBuilder
 
 logging.basicConfig(
@@ -52,61 +53,31 @@ logger = logging.getLogger("knowledge_graph.init")
 # Validation helpers
 # ---------------------------------------------------------------------------
 
-_VALIDATION_QUERIES = [
-    # Every Table must belong to a Schema
-    (
-        "Tables without a Schema",
-        "MATCH (t:Table) WHERE NOT (t)-[:BELONGS_TO]->(:Schema) RETURN count(t) AS cnt",
-        0,
-    ),
-    # Every Column must belong to a Table
-    (
-        "Columns without a Table",
-        "MATCH (c:Column) WHERE NOT (:Table)-[:HAS_COLUMN]->(c) RETURN count(c) AS cnt",
-        0,
-    ),
-    # FK edges should reference existing Column nodes
-    (
-        "FK edges with missing target",
-        """MATCH (src:Column)-[fk:HAS_FOREIGN_KEY]->(tgt)
-           WHERE NOT (tgt:Column)
-           RETURN count(fk) AS cnt""",
-        0,
-    ),
-    # At least one table must exist (sanity check)
-    (
-        "Total tables > 0",
-        "MATCH (t:Table) RETURN count(t) AS cnt",
-        1,   # minimum expected value
-    ),
-]
-
-
-def validate_graph(builder: GraphBuilder) -> bool:
+def validate_graph(graph: KnowledgeGraph) -> bool:
     """
-    Run basic consistency checks against the live graph.
+    Run basic consistency checks against the in-memory graph.
     Returns True if all checks pass.
     """
-    if not builder._driver:
-        builder.connect()
-
-    db = builder.config.neo4j.database
     all_passed = True
+    checks = [
+        ("Total tables > 0", graph.count_nodes("Table") >= 1),
+        ("Total columns > 0", graph.count_nodes("Column") >= 1),
+        ("HAS_COLUMN edges exist", graph.count_edges("HAS_COLUMN") >= 1),
+    ]
 
-    with builder._driver.session(database=db) as session:
-        for check_name, cypher, expected in _VALIDATION_QUERIES:
-            result = session.run(cypher)
-            cnt = result.single()["cnt"]
-            # For "minimum expected" checks, cnt >= expected; for "must be 0", cnt == 0
-            if expected == 0:
-                passed = cnt == 0
-            else:
-                passed = cnt >= expected
+    # Every column should have a HAS_COLUMN incoming edge
+    col_ids_with_incoming = {
+        edge["_to"]
+        for edge in graph.get_all_edges("HAS_COLUMN")
+    }
+    orphan_columns = graph.count_nodes("Column") - len(col_ids_with_incoming)
+    checks.append(("Orphan columns == 0", orphan_columns == 0))
 
-            status = "PASS" if passed else "FAIL"
-            logger.info("Validation [%s] %s — count=%d", status, check_name, cnt)
-            if not passed:
-                all_passed = False
+    for check_name, passed in checks:
+        status = "PASS" if passed else "FAIL"
+        logger.info("Validation [%s] %s", status, check_name)
+        if not passed:
+            all_passed = False
 
     return all_passed
 
@@ -118,19 +89,20 @@ def validate_graph(builder: GraphBuilder) -> bool:
 def initialize_graph(
     config: Optional[GraphConfig] = None,
     refresh_only: bool = False,
-) -> Dict[str, Any]:
+) -> Tuple[KnowledgeGraph, Dict[str, Any]]:
     """
     Run the full graph construction pipeline.
 
     Parameters
     ----------
     config:       GraphConfig instance; if None, loads from environment.
-    refresh_only: If True, skip validation and only run extraction + build
-                  (useful for incremental scheduled refreshes).
+    refresh_only: If True, skip validation checks.
 
     Returns
     -------
-    Dict with build statistics and a 'success' boolean key.
+    (KnowledgeGraph, report_dict)
+    The KnowledgeGraph is ready for traversal queries.
+    The report dict contains build statistics and a 'success' boolean key.
     """
     start_time = time.monotonic()
     config = config or GraphConfig()
@@ -138,7 +110,6 @@ def initialize_graph(
     report: Dict[str, Any] = {
         "success": False,
         "oracle_connected": False,
-        "neo4j_connected": False,
         "extraction": {},
         "build": {},
         "glossary": {},
@@ -147,23 +118,16 @@ def initialize_graph(
     }
 
     # ------------------------------------------------------------------
-    # Step 1: Health checks
+    # Step 1: Oracle health check
     # ------------------------------------------------------------------
     logger.info("=== KnowledgeQL Graph Initialization ===")
 
     extractor = OracleMetadataExtractor(config.oracle)
     if not extractor.check_connectivity():
         logger.error("Cannot connect to Oracle — aborting initialization")
-        return report
+        return KnowledgeGraph(), report
     report["oracle_connected"] = True
     logger.info("Oracle connectivity: OK")
-
-    builder = GraphBuilder(config)
-    if not builder.check_connectivity():
-        logger.error("Cannot connect to Neo4j — aborting initialization")
-        return report
-    report["neo4j_connected"] = True
-    logger.info("Neo4j connectivity: OK")
 
     # ------------------------------------------------------------------
     # Step 2: Oracle metadata extraction
@@ -174,7 +138,7 @@ def initialize_graph(
         metadata = extractor.extract()
     except Exception as exc:
         logger.exception("Metadata extraction failed: %s", exc)
-        return report
+        return KnowledgeGraph(), report
 
     extract_elapsed = time.monotonic() - extract_start
     report["extraction"] = {
@@ -190,39 +154,38 @@ def initialize_graph(
     logger.info("Extraction complete in %.1fs. %s", extract_elapsed, metadata.summary())
 
     # ------------------------------------------------------------------
-    # Step 3: Build the Neo4j knowledge graph
+    # Step 3: Build the in-memory knowledge graph
     # ------------------------------------------------------------------
-    logger.info("Building Neo4j knowledge graph…")
+    logger.info("Building in-memory knowledge graph…")
     build_start = time.monotonic()
     try:
-        with builder:
-            build_stats = builder.build(metadata)
+        builder = GraphBuilder(config)
+        build_stats = builder.build(metadata)
+        graph = builder.graph
 
-            # ----------------------------------------------------------
-            # Step 4: Infer business glossary from Oracle metadata
-            # ----------------------------------------------------------
-            logger.info("Inferring business glossary from Oracle metadata…")
-            db = config.neo4j.database
-            with builder._driver.session(database=db) as session:
-                glossary_builder = InferredGlossaryBuilder(session)
-                glossary_stats = glossary_builder.build(metadata)
-            report["glossary"] = glossary_stats
+        # ------------------------------------------------------------------
+        # Step 4: Infer business glossary from Oracle metadata
+        # ------------------------------------------------------------------
+        logger.info("Inferring business glossary from Oracle metadata…")
+        glossary_builder = InferredGlossaryBuilder(graph)
+        glossary_stats = glossary_builder.build(metadata)
+        report["glossary"] = glossary_stats
 
-            # ----------------------------------------------------------
-            # Step 5: Validate
-            # ----------------------------------------------------------
-            if not refresh_only:
-                logger.info("Running graph validation checks…")
-                validation_passed = validate_graph(builder)
-                report["validation_passed"] = validation_passed
-                if not validation_passed:
-                    logger.warning("Graph validation found issues — review logs above")
-            else:
-                report["validation_passed"] = True
+        # ------------------------------------------------------------------
+        # Step 5: Validate
+        # ------------------------------------------------------------------
+        if not refresh_only:
+            logger.info("Running graph validation checks…")
+            validation_passed = validate_graph(graph)
+            report["validation_passed"] = validation_passed
+            if not validation_passed:
+                logger.warning("Graph validation found issues — review logs above")
+        else:
+            report["validation_passed"] = True
 
     except Exception as exc:
         logger.exception("Graph build failed: %s", exc)
-        return report
+        return KnowledgeGraph(), report
 
     build_elapsed = time.monotonic() - build_start
     report["build"] = {**build_stats, "elapsed_seconds": round(build_elapsed, 1)}
@@ -237,10 +200,10 @@ def initialize_graph(
     logger.info("=== Initialization complete in %.1fs ===", total_elapsed)
     logger.info("  Extracted: %d tables, %d columns, %d FK relationships",
                 len(metadata.tables), len(metadata.columns), len(metadata.foreign_keys))
-    logger.info("  Graph nodes written: Schema=%d, Table=%d, Column=%d, View=%d",
+    logger.info("  Graph nodes: Schema=%d, Table=%d, Column=%d, View=%d",
                 build_stats.get("schemas", 0), build_stats.get("tables", 0),
                 build_stats.get("columns", 0), build_stats.get("views", 0))
-    logger.info("  Graph edges written: FK=%d, JOIN_PATH=%d, SIMILAR_TO=%d",
+    logger.info("  Graph edges: FK=%d, JOIN_PATH=%d, SIMILAR_TO=%d",
                 build_stats.get("foreign_keys", 0), build_stats.get("join_paths", 0),
                 build_stats.get("similar_to", 0))
     logger.info("  Business terms: %d terms, %d mappings",
@@ -248,7 +211,7 @@ def initialize_graph(
     logger.info("  Validation: %s",
                 "PASSED" if report["validation_passed"] else "FAILED")
 
-    return report
+    return graph, report
 
 
 # ---------------------------------------------------------------------------
@@ -257,7 +220,7 @@ def initialize_graph(
 
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Initialize or refresh the KnowledgeQL Neo4j knowledge graph"
+        description="Initialize or refresh the KnowledgeQL in-memory knowledge graph"
     )
     parser.add_argument(
         "--refresh-only",
@@ -278,9 +241,9 @@ if __name__ == "__main__":
     args = _parse_args()
     logging.getLogger().setLevel(getattr(logging, args.log_level))
 
-    report = initialize_graph(refresh_only=args.refresh_only)
+    _graph, _report = initialize_graph(refresh_only=args.refresh_only)
 
-    if not report["success"]:
+    if not _report["success"]:
         logger.error("Graph initialization FAILED. See logs above for details.")
         sys.exit(1)
 
