@@ -27,7 +27,7 @@ import streamlit as st
 # Page configuration — MUST be first Streamlit call
 # ---------------------------------------------------------------------------
 st.set_page_config(
-    page_title="KnowledgeQL",
+    page_title="NLP2SQL",
     page_icon="🔍",
     layout="wide",
     initial_sidebar_state="expanded",
@@ -423,7 +423,8 @@ def render_sidebar() -> None:
         )
 
         # LLM status
-        has_key = bool(config.llm_api_key)
+        is_vertex = config.llm_provider.lower() == "vertex"
+        has_key = bool(config.llm_api_key) or is_vertex  # Vertex uses ADC, no key needed
         demo = config.demo_mode
         if has_key:
             llm_pill = f"<span class='status-pill pill-green'>{config.llm_provider.upper()} READY</span>"
@@ -457,22 +458,27 @@ def render_sidebar() -> None:
 
         # --------------------------------------------------------- Settings
         with st.expander("Settings", expanded=False):
+            _providers = ["openai", "anthropic", "vertex"]
             provider = st.selectbox(
                 "LLM Provider",
-                options=["openai", "anthropic"],
-                index=0 if config.llm_provider.lower() == "openai" else 1,
+                options=_providers,
+                index=_providers.index(config.llm_provider.lower())
+                if config.llm_provider.lower() in _providers else 0,
                 key="settings_provider",
             )
             model = st.text_input(
                 "Model",
                 value=config.llm_model,
+                placeholder="gpt-4o / claude-sonnet-4-6 / gemini-1.5-pro",
                 key="settings_model",
             )
+            _is_vertex = (provider == "vertex")
             api_key = st.text_input(
                 "API Key",
-                value=config.llm_api_key,
+                value="" if _is_vertex else config.llm_api_key,
                 type="password",
-                placeholder="sk-... or ant-...",
+                placeholder="Not required for Vertex AI (uses ADC)" if _is_vertex else "sk-... or ant-...",
+                disabled=_is_vertex,
                 key="settings_api_key",
             )
             demo_mode = st.toggle(
@@ -943,6 +949,198 @@ def _default_editor_sql() -> str:
 
 
 # ---------------------------------------------------------------------------
+# Knowledge Graph visualisation tab
+# ---------------------------------------------------------------------------
+
+def render_graph_tab() -> None:
+    """Interactive network diagram of table relationships from the knowledge graph."""
+    import plotly.graph_objects as go
+    import networkx as nx
+    import pandas as pd
+
+    graph = st.session_state.graph
+    if graph is None:
+        st.info("The knowledge graph is not yet initialised. Submit a chat query first to load it.")
+        return
+
+    # ── Controls ──────────────────────────────────────────────────────────────
+    col_hdr, col_ctrl = st.columns([4, 1])
+    with col_hdr:
+        st.markdown("### Table Relationship Graph")
+        st.caption(
+            "Nodes = tables · Edges = foreign key relationships detected by the knowledge graph. "
+            "Hover a node for table details. Node size reflects the number of connections."
+        )
+    with col_ctrl:
+        show_all = st.toggle("Multi-hop paths", value=False, key="graph_show_all")
+
+    # ── Pull data from the in-memory graph ────────────────────────────────────
+    tables = graph.get_all_nodes("Table")
+    join_paths = graph.get_all_edges("JOIN_PATH")
+
+    if not tables:
+        st.warning("No tables found in the knowledge graph.")
+        return
+
+    # Index by FQN — merge_node stores fqn as a property
+    table_meta: dict = {t["fqn"]: t for t in tables if t.get("fqn")}
+
+    if not table_meta:
+        st.warning("Table nodes do not carry FQN properties — cannot render graph.")
+        return
+
+    # Filter: direct FK (weight=1) or all pre-computed paths
+    filtered = [
+        e for e in join_paths
+        if (show_all or e.get("weight", 1) == 1)
+        and e.get("_from") in table_meta
+        and e.get("_to") in table_meta
+    ]
+
+    # Deduplicate bidirectional JOIN_PATH edges
+    seen_pairs: set = set()
+    unique_edges = []
+    for e in filtered:
+        key = frozenset([e["_from"], e["_to"]])
+        if key not in seen_pairs:
+            seen_pairs.add(key)
+            unique_edges.append(e)
+
+    # ── NetworkX spring layout ────────────────────────────────────────────────
+    G = nx.Graph()
+    for fqn in table_meta:
+        G.add_node(fqn)
+    for e in unique_edges:
+        G.add_edge(e["_from"], e["_to"])
+
+    pos = nx.spring_layout(G, seed=42, k=2.5)
+
+    # ── Build Plotly traces ───────────────────────────────────────────────────
+    # -- Edge lines
+    edge_x: list = []
+    edge_y: list = []
+    mid_x: list = []
+    mid_y: list = []
+    mid_labels: list = []
+
+    for e in unique_edges:
+        x0, y0 = pos[e["_from"]]
+        x1, y1 = pos[e["_to"]]
+        edge_x += [x0, x1, None]
+        edge_y += [y0, y1, None]
+        mid_x.append((x0 + x1) / 2)
+        mid_y.append((y0 + y1) / 2)
+        # join_columns is a list of {src, tgt, constraint} dicts
+        jcs = e.get("join_columns", [])
+        col_strs = [jc.get("src", "").split(".")[-1] for jc in jcs if isinstance(jc, dict)]
+        mid_labels.append(", ".join(col_strs) if col_strs else "")
+
+    edge_trace = go.Scatter(
+        x=edge_x, y=edge_y,
+        mode="lines",
+        line=dict(width=1.5, color="#adb5bd"),
+        hoverinfo="none",
+    )
+
+    # FK column names shown at edge midpoints
+    label_trace = go.Scatter(
+        x=mid_x, y=mid_y,
+        mode="text",
+        text=mid_labels,
+        textfont=dict(size=9, color="#6c757d"),
+        hoverinfo="none",
+    )
+
+    # -- Table nodes (sized by degree)
+    degrees = dict(G.degree())
+    node_x: list = []
+    node_y: list = []
+    node_text: list = []
+    node_hover: list = []
+    node_sizes: list = []
+
+    for fqn in G.nodes():
+        x, y = pos[fqn]
+        node_x.append(x)
+        node_y.append(y)
+        meta = table_meta[fqn]
+        name = meta.get("name", fqn)
+        node_text.append(name)
+        deg = degrees[fqn]
+        rc = meta.get("row_count")
+        rows_str = f"{rc:,}" if rc else "—"
+        hover = (
+            f"<b>{name}</b><br>"
+            f"Schema: {meta.get('schema', '')}<br>"
+            f"Connections: {deg}<br>"
+            f"Est. rows: {rows_str}"
+        )
+        if meta.get("comments"):
+            hover += f"<br><i>{meta['comments']}</i>"
+        node_hover.append(hover)
+        node_sizes.append(22 + deg * 6)
+
+    node_trace = go.Scatter(
+        x=node_x, y=node_y,
+        mode="markers+text",
+        text=node_text,
+        textposition="top center",
+        textfont=dict(size=11, color="#1f4e79", family="monospace"),
+        hovertext=node_hover,
+        hoverinfo="text",
+        marker=dict(
+            size=node_sizes,
+            color="#2e86de",
+            opacity=0.85,
+            line=dict(width=2, color="white"),
+        ),
+    )
+
+    fig = go.Figure(
+        data=[edge_trace, label_trace, node_trace],
+        layout=go.Layout(
+            showlegend=False,
+            hovermode="closest",
+            margin=dict(b=20, l=5, r=5, t=10),
+            height=580,
+            xaxis=dict(showgrid=False, zeroline=False, showticklabels=False),
+            yaxis=dict(showgrid=False, zeroline=False, showticklabels=False),
+            plot_bgcolor="rgba(0,0,0,0)",
+            paper_bgcolor="rgba(0,0,0,0)",
+        ),
+    )
+
+    st.plotly_chart(fig, use_container_width=True)
+
+    # ── FK relationship table ─────────────────────────────────────────────────
+    if unique_edges:
+        label = f"Foreign Key Relationships — {len(unique_edges)} connections"
+        with st.expander(label, expanded=True):
+            rows = []
+            for e in sorted(unique_edges, key=lambda e: e.get("_from", "")):
+                jcs = e.get("join_columns", [])
+                col_strs = [
+                    f"{jc.get('src','').split('.')[-1]} → {jc.get('tgt','').split('.')[-1]}"
+                    for jc in jcs if isinstance(jc, dict)
+                ]
+                rows.append({
+                    "From Table": table_meta.get(e["_from"], {}).get("name", e["_from"]),
+                    "To Table": table_meta.get(e["_to"], {}).get("name", e["_to"]),
+                    "Join Columns": "  |  ".join(col_strs),
+                    "Hops": int(e.get("weight", 1)),
+                    "Cardinality": e.get("cardinality", "—"),
+                    "Constraint": jcs[0].get("constraint", "—") if jcs else "—",
+                })
+            st.dataframe(
+                pd.DataFrame(rows),
+                use_container_width=True,
+                hide_index=True,
+            )
+    elif not join_paths:
+        st.info("No JOIN_PATH edges found. The graph may not have pre-computed join routes yet.")
+
+
+# ---------------------------------------------------------------------------
 # Main app entry point
 # ---------------------------------------------------------------------------
 
@@ -980,13 +1178,16 @@ def main() -> None:
     )
 
     # Tabs
-    tab_chat, tab_editor = st.tabs(["Chat", "SQL Editor"])
+    tab_chat, tab_editor, tab_graph = st.tabs(["Chat", "SQL Editor", "Knowledge Graph"])
 
     with tab_chat:
         render_chat_tab()
 
     with tab_editor:
         render_sql_editor_tab()
+
+    with tab_graph:
+        render_graph_tab()
 
     # Footer
     st.markdown(

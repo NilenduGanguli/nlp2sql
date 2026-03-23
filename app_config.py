@@ -25,6 +25,7 @@ try:
     class LLMProvider(str, Enum):
         OPENAI = "openai"
         ANTHROPIC = "anthropic"
+        VERTEX = "vertex"
 
     class AppConfig(BaseSettings):
         """Top-level application configuration."""
@@ -36,6 +37,10 @@ try:
         llm_fallback_provider: str = Field(
             default="anthropic", validation_alias="LLM_FALLBACK_PROVIDER"
         )
+
+        # --- Vertex AI (uses Application Default Credentials, no API key) ---
+        vertex_project: str = Field(default="", validation_alias="VERTEX_PROJECT")
+        vertex_location: str = Field(default="us-central1", validation_alias="VERTEX_LOCATION")
 
         # --- Query execution limits ---
         max_result_rows: int = Field(
@@ -58,6 +63,9 @@ try:
 
         def __init__(self, **data):
             super().__init__(**data)
+            # Vertex AI uses ADC — no API key needed
+            if self.llm_provider.lower() == "vertex":
+                return
             # Resolve LLM API key from multiple possible env vars if not set
             if not self.llm_api_key:
                 if self.llm_provider.lower() == "anthropic":
@@ -76,6 +84,7 @@ except ImportError:
     class LLMProvider(str, Enum):  # type: ignore[no-redef]
         OPENAI = "openai"
         ANTHROPIC = "anthropic"
+        VERTEX = "vertex"
 
     class AppConfig:  # type: ignore[no-redef]
         """Fallback AppConfig when pydantic-settings is unavailable."""
@@ -97,6 +106,9 @@ except ImportError:
                 "llm_fallback_provider",
                 os.getenv("LLM_FALLBACK_PROVIDER", "anthropic"),
             )
+            # Vertex AI — Application Default Credentials, no API key required
+            self.vertex_project = kwargs.get("vertex_project", os.getenv("VERTEX_PROJECT", ""))
+            self.vertex_location = kwargs.get("vertex_location", os.getenv("VERTEX_LOCATION", "us-central1"))
             self.max_result_rows = int(
                 kwargs.get("max_result_rows", os.getenv("MAX_RESULT_ROWS", "10000"))
             )

@@ -62,6 +62,15 @@ services:
       ORACLE_PASSWORD: KycPassword1
       ORACLE_TARGET_SCHEMAS: KYC
       DEMO_MODE: "false"
+      # Vertex AI — leave empty if using OpenAI/Anthropic
+      VERTEX_PROJECT: ${VERTEX_PROJECT:-}
+      VERTEX_LOCATION: ${VERTEX_LOCATION:-us-central1}
+      # When using a service account JSON, set this on the host and mount below
+      GOOGLE_APPLICATION_CREDENTIALS: ${GOOGLE_APPLICATION_CREDENTIALS:-}
+    # Uncomment and set GOOGLE_APPLICATION_CREDENTIALS on the host to mount
+    # a service account key for Vertex AI inside the container:
+    # volumes:
+    #   - ${GOOGLE_APPLICATION_CREDENTIALS}:/secrets/gcp-sa.json:ro
     restart: on-failure:3
 
 volumes:
