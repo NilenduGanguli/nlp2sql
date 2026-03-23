@@ -1,5 +1,6 @@
 # Oracle connectivity (pure Python thin mode - no Instant Client needed)
-python-oracledb>=2.0.0
+# PyPI package name is "oracledb"; Oracle's docs/GitHub call it "python-oracledb"
+oracledb>=2.0.0
 
 # Configuration & environment
 python-dotenv>=1.0.0

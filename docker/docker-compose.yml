@@ -1,4 +1,25 @@
+# =============================================================================
+# KnowledgeQL — Full-Stack Docker Compose
+#
+# Services:
+#   oracle  — Oracle Free 23c database (gvenzl/oracle-free)
+#   app     — KnowledgeQL Streamlit application
+#
+# Usage:
+#   docker compose -f docker/docker-compose.yml up          # start everything
+#   docker compose -f docker/docker-compose.yml up oracle   # DB only
+#   docker compose -f docker/docker-compose.yml logs -f app # tail app logs
+#   docker compose -f docker/docker-compose.yml down -v     # teardown + data
+#
+# The app container waits for Oracle to be healthy, then:
+#   1. Ensures KYC schema exists (creates tables + data if missing)
+#   2. Builds the in-memory knowledge graph from live Oracle metadata
+#   3. Starts Streamlit on port 8501
+# =============================================================================
+
 services:
+
+  # ── Oracle Free 23c ─────────────────────────────────────────────────────────
   oracle:
     image: gvenzl/oracle-free:latest
     container_name: nlp2sql_oracle
@@ -17,6 +38,31 @@ services:
       timeout: 20s
       retries: 15
       start_period: 120s
+
+  # ── KnowledgeQL Streamlit App ───────────────────────────────────────────────
+  app:
+    build:
+      context: ..            # project root (where Dockerfile lives)
+      dockerfile: Dockerfile
+    image: knowledgeql-app:latest
+    container_name: nlp2sql_app
+    depends_on:
+      oracle:
+        condition: service_healthy
+    ports:
+      - "8502:8501"
+    # env_file supplies LLM keys and other settings from the project .env.
+    # The ORACLE_DSN override below points to the oracle service on the
+    # internal compose network instead of localhost.
+    env_file:
+      - ../.env
+    environment:
+      ORACLE_DSN: oracle:1521/FREEPDB1
+      ORACLE_USER: kyc
+      ORACLE_PASSWORD: KycPassword1
+      ORACLE_TARGET_SCHEMAS: KYC
+      DEMO_MODE: "false"
+    restart: on-failure:3
 
 volumes:
   oracle_data:

@@ -198,7 +198,12 @@ def init_session_state() -> None:
 
 @st.cache_resource(show_spinner="Building knowledge graph...")
 def get_knowledge_graph(_config_hash: str):
-    """Build and cache the KnowledgeGraph from mock KYC metadata."""
+    """Build and cache the KnowledgeGraph.
+
+    When DEMO_MODE=false the graph is built from live Oracle metadata via
+    initialize_graph().  Falls back to the hardcoded demo schema on error or
+    when DEMO_MODE=true.
+    """
     from knowledge_graph.graph_builder import GraphBuilder
     from knowledge_graph.glossary_loader import InferredGlossaryBuilder
     from knowledge_graph.models import (
@@ -214,6 +219,23 @@ def get_knowledge_graph(_config_hash: str):
 
     config = AppConfig()
 
+    # ── Live Oracle graph ─────────────────────────────────────────────────────
+    if not config.demo_mode:
+        try:
+            from knowledge_graph.init_graph import initialize_graph
+            graph, report = initialize_graph(config.graph)
+            if report.get("success"):
+                return graph
+            st.warning(
+                "Oracle graph initialisation had issues — falling back to demo schema. "
+                "Check the app logs for details."
+            )
+        except Exception as _exc:
+            st.warning(
+                f"Could not build graph from Oracle ({_exc}) — using demo schema."
+            )
+
+    # ── Demo / fallback: hardcoded static schema ──────────────────────────────
     meta = OracleMetadata()
     meta.schemas = [SchemaNode(name="KYC")]
 
