@@ -6,7 +6,7 @@ Returns the configured LangChain chat model based on AppConfig.
 Supports:
   - OpenAI GPT-4o (default)
   - Anthropic Claude (fallback or explicit selection)
-  - Google Vertex AI (Gemini models via Application Default Credentials)
+  - Google Vertex AI (Gemini via genai.Client — works with org proxies)
 
 Falls back gracefully when provider libraries are not installed.
 """
@@ -15,9 +15,91 @@ from __future__ import annotations
 
 import logging
 import os
+from typing import Any, Iterator, List, Optional
+
+from langchain_core.language_models.chat_models import BaseChatModel
+from langchain_core.messages import AIMessage, BaseMessage
+from langchain_core.outputs import ChatGeneration, ChatResult
+from pydantic import ConfigDict, PrivateAttr
 
 logger = logging.getLogger(__name__)
 
+
+# ---------------------------------------------------------------------------
+# Vertex AI: minimal wrapper around google.genai.Client
+# ---------------------------------------------------------------------------
+
+class _VertexGenAIChat(BaseChatModel):
+    """
+    Thin LangChain BaseChatModel that delegates to google.genai.Client directly.
+
+    Using client.models.generate_content() instead of LangChain's own Google
+    wrappers makes this work with org proxies where those wrappers force
+    credential patterns that don't apply.
+    """
+
+    _client: Any = PrivateAttr()
+    model: str
+    temperature: float = 0.0
+    max_output_tokens: int = 4096
+    thinking_budget: int = 0
+
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    def __init__(self, *, client: Any, **kwargs: Any) -> None:
+        super().__init__(**kwargs)
+        self._client = client
+
+    @property
+    def _llm_type(self) -> str:
+        return "genai-vertex"
+
+    def _generate(
+        self,
+        messages: List[BaseMessage],
+        stop: Optional[List[str]] = None,
+        run_manager: Optional[Any] = None,
+        **kwargs: Any,
+    ) -> ChatResult:
+        from google.genai import types
+
+        system_text = ""
+        contents: List[Any] = []
+
+        for msg in messages:
+            if msg.type == "system":
+                system_text = str(msg.content)
+            elif msg.type == "human":
+                contents.append(
+                    types.Content(role="user", parts=[types.Part(text=str(msg.content))])
+                )
+            elif msg.type == "ai":
+                contents.append(
+                    types.Content(role="model", parts=[types.Part(text=str(msg.content))])
+                )
+
+        cfg = types.GenerateContentConfig(
+            temperature=self.temperature,
+            max_output_tokens=self.max_output_tokens,
+            thinking_config=types.ThinkingConfig(thinking_budget=self.thinking_budget),
+        )
+        if system_text:
+            cfg.system_instruction = system_text
+
+        response = self._client.models.generate_content(
+            model=self.model,
+            contents=contents,
+            config=cfg,
+        )
+
+        return ChatResult(
+            generations=[ChatGeneration(message=AIMessage(content=response.text or ""))]
+        )
+
+
+# ---------------------------------------------------------------------------
+# Factory
+# ---------------------------------------------------------------------------
 
 def get_llm(config):
     """
@@ -27,8 +109,7 @@ def get_llm(config):
     ----------
     config : AppConfig
         Application configuration with llm_provider, llm_model, llm_api_key.
-        For Vertex AI, also vertex_project and vertex_location are used;
-        authentication relies on Application Default Credentials (ADC).
+        For Vertex AI, also vertex_project and vertex_location are used.
 
     Returns
     -------
@@ -40,7 +121,7 @@ def get_llm(config):
     ImportError
         If the required provider library is not installed.
     ValueError
-        If required credentials are missing.
+        If required credentials are missing or cannot be loaded.
     """
     provider = (config.llm_provider or "openai").lower()
     api_key = config.llm_api_key or ""
@@ -68,19 +149,18 @@ def get_llm(config):
     if provider == "vertex":
         try:
             from google import genai
-            from langchain_google_genai import ChatGoogleGenerativeAI
         except ImportError as exc:
             raise ImportError(
-                "google-genai and langchain-google-genai are required for Vertex AI. "
-                "Install with: pip install google-genai langchain-google-genai"
+                "google-genai is required for Vertex AI provider. "
+                "Install with: pip install google-genai"
             ) from exc
 
         model_name = config.llm_model or "gemini-2.5-flash"
         project = getattr(config, "vertex_project", None) or os.getenv("VERTEX_PROJECT", "")
         location = getattr(config, "vertex_location", None) or os.getenv("VERTEX_LOCATION", "us-central1")
 
-        # Load service account credentials from GOOGLE_APPLICATION_CREDENTIALS.
-        # Falls back to ADC (gcloud login / Workload Identity) when the var is not set.
+        # Credentials are optional — omit GOOGLE_APPLICATION_CREDENTIALS when
+        # using an org proxy that handles auth transparently.
         credentials = None
         creds_path = os.getenv("GOOGLE_APPLICATION_CREDENTIALS", "")
         if creds_path:
@@ -97,7 +177,7 @@ def get_llm(config):
                     f"but the file could not be loaded: {exc}"
                 ) from exc
         else:
-            logger.info("Vertex AI: GOOGLE_APPLICATION_CREDENTIALS not set — using ADC")
+            logger.info("Vertex AI: no GOOGLE_APPLICATION_CREDENTIALS — using proxy/ADC")
 
         client = genai.Client(
             vertexai=True,
@@ -106,16 +186,15 @@ def get_llm(config):
             credentials=credentials,
         )
         logger.info(
-            "Vertex AI genai.Client initialised: project=%s, location=%s, model=%s",
-            project or "(ADC default)", location, model_name,
+            "genai.Client initialised: project=%s, location=%s, model=%s",
+            project or "(default)", location, model_name,
         )
-        return ChatGoogleGenerativeAI(
-            model=model_name,
+        return _VertexGenAIChat(
             client=client,
-            vertexai=True,
-            temperature=0,
+            model=model_name,
+            temperature=0.0,
             max_output_tokens=4096,
-            thinking_budget=0,  # disable extended thinking — eliminates latency on 2.5 Flash
+            thinking_budget=0,
         )
 
     # ── OpenAI (default) ──────────────────────────────────────────────────────
