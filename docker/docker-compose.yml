@@ -64,6 +64,9 @@ services:
       # Container uses thin mode — no Oracle Instant Client in the image.
       # The host .env may have ORACLE_THICK_MODE=true; override it here.
       ORACLE_THICK_MODE: "false"
+      # kyc is a standard app user without DBA or SELECT ANY DICTIONARY — always
+      # use ALL_* views so table/column/index queries work without elevated privs.
+      ORACLE_USE_DBA_VIEWS: "false"
       DEMO_MODE: "false"
       # Vertex AI — leave empty if using OpenAI/Anthropic
       VERTEX_PROJECT: ${VERTEX_PROJECT:-}

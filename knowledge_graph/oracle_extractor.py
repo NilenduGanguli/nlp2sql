@@ -151,21 +151,26 @@ class OracleMetadataExtractor:
     def _extract_all(self, conn: oracledb.Connection) -> OracleMetadata:
         meta = OracleMetadata()
 
-        schemas = self._resolve_schemas(conn)
-        logger.info("Extracting from schemas: %s", schemas)
+        try:
+            schemas = self._resolve_schemas(conn)
+        except Exception as exc:
+            logger.error("Failed to resolve schemas — aborting extraction: %s", exc)
+            return meta
 
+        logger.info("Extracting from schemas: %s", schemas)
         meta.schemas = [SchemaNode(name=s) for s in schemas]
-        meta.tables = self._extract_tables(conn, schemas)
-        meta.columns = self._extract_columns(conn, schemas)
-        meta.primary_keys = self._extract_primary_keys(conn, schemas)
-        meta.foreign_keys = self._extract_foreign_keys(conn, schemas)
-        meta.views = self._extract_views(conn, schemas)
-        meta.indexes = self._extract_indexes(conn, schemas)
-        meta.constraints = self._extract_constraints(conn, schemas)
-        meta.procedures = self._extract_procedures(conn, schemas)
-        meta.synonyms = self._extract_synonyms(conn, schemas)
-        meta.sequences = self._extract_sequences(conn, schemas)
-        meta.view_dependencies = self._extract_view_dependencies(conn, schemas)
+
+        meta.tables = self._safe_extract("tables", self._extract_tables, conn, schemas, default=[])
+        meta.columns = self._safe_extract("columns", self._extract_columns, conn, schemas, default=[])
+        meta.primary_keys = self._safe_extract("primary_keys", self._extract_primary_keys, conn, schemas, default=[])
+        meta.foreign_keys = self._safe_extract("foreign_keys", self._extract_foreign_keys, conn, schemas, default=[])
+        meta.views = self._safe_extract("views", self._extract_views, conn, schemas, default=[])
+        meta.indexes = self._safe_extract("indexes", self._extract_indexes, conn, schemas, default=[])
+        meta.constraints = self._safe_extract("constraints", self._extract_constraints, conn, schemas, default=[])
+        meta.procedures = self._safe_extract("procedures", self._extract_procedures, conn, schemas, default=[])
+        meta.synonyms = self._safe_extract("synonyms", self._extract_synonyms, conn, schemas, default=[])
+        meta.sequences = self._safe_extract("sequences", self._extract_sequences, conn, schemas, default=[])
+        meta.view_dependencies = self._safe_extract("view_dependencies", self._extract_view_dependencies, conn, schemas, default={})
         meta.indexed_columns = self._build_indexed_column_map(meta.indexes)
 
         # Flag FK and indexed columns on ColumnNode objects
@@ -177,6 +182,14 @@ class OracleMetadataExtractor:
 
         logger.info("Extraction complete. %s", meta.summary())
         return meta
+
+    def _safe_extract(self, label: str, fn, *args, default):
+        """Call fn(*args); on any exception log a warning and return default."""
+        try:
+            return fn(*args)
+        except Exception as exc:
+            logger.warning("Skipping %s extraction due to error: %s", label, exc)
+            return default
 
     # ------------------------------------------------------------------
     # Schema resolution
@@ -275,23 +288,29 @@ class OracleMetadataExtractor:
         with conn.cursor() as cur:
             cur.execute(sql, self._bind_schemas(schemas))
             for row in cur:
-                default_raw = row[8]
-                default_str = str(default_raw).strip() if default_raw else None
-                columns.append(ColumnNode(
-                    schema=row[0],
-                    table_name=row[1],
-                    name=row[2],
-                    data_type=row[3],
-                    data_length=row[4],
-                    precision=row[5],
-                    scale=row[6],
-                    nullable=row[7],
-                    default_value=default_str,
-                    column_id=row[9] or 0,
-                    comments=row[10],
-                    num_distinct=row[11],
-                    histogram_type=row[12],
-                ))
+                try:
+                    default_raw = row[8]
+                    default_str = str(default_raw).strip() if default_raw else None
+                    data_type = str(row[3]) if row[3] else "UNKNOWN"
+                    columns.append(ColumnNode(
+                        schema=row[0],
+                        table_name=row[1],
+                        name=row[2],
+                        data_type=data_type,
+                        data_length=row[4],
+                        precision=row[5],
+                        scale=row[6],
+                        nullable=row[7],
+                        default_value=default_str,
+                        column_id=row[9] or 0,
+                        comments=row[10],
+                        num_distinct=row[11],
+                        histogram_type=row[12],
+                    ))
+                except Exception as exc:
+                    logger.warning(
+                        "Skipping column %s.%s.%s: %s", row[0], row[1], row[2], exc
+                    )
         logger.debug("Extracted %d columns", len(columns))
         return columns
 
@@ -302,7 +321,7 @@ class OracleMetadataExtractor:
     def _extract_primary_keys(
         self, conn: oracledb.Connection, schemas: List[str]
     ) -> List[HasPrimaryKeyRel]:
-        prefix = self._prefix
+        # Always use ALL_CONSTRAINTS — accessible to any schema owner without DBA.
         schema_clause = self._in_clause(schemas, "a.owner")
         sql = f"""
             SELECT
@@ -311,8 +330,8 @@ class OracleMetadataExtractor:
                 a.constraint_name,
                 b.column_name,
                 b.position
-            FROM {prefix}_CONSTRAINTS a
-            JOIN {prefix}_CONS_COLUMNS b
+            FROM ALL_CONSTRAINTS a
+            JOIN ALL_CONS_COLUMNS b
                 ON b.owner = a.owner AND b.constraint_name = a.constraint_name
             WHERE {schema_clause}
               AND a.constraint_type = 'P'
@@ -342,7 +361,7 @@ class OracleMetadataExtractor:
     def _extract_foreign_keys(
         self, conn: oracledb.Connection, schemas: List[str]
     ) -> List[HasForeignKeyRel]:
-        prefix = self._prefix
+        # Always use ALL_CONSTRAINTS — accessible to any schema owner without DBA.
         schema_clause = self._in_clause(schemas, "a.owner")
         sql = f"""
             SELECT
@@ -355,12 +374,12 @@ class OracleMetadataExtractor:
                 c.owner                     AS ref_owner,
                 c.table_name                AS ref_table,
                 d.column_name               AS ref_column
-            FROM {prefix}_CONSTRAINTS a
-            JOIN {prefix}_CONS_COLUMNS b
+            FROM ALL_CONSTRAINTS a
+            JOIN ALL_CONS_COLUMNS b
                 ON b.owner = a.owner AND b.constraint_name = a.constraint_name
-            JOIN {prefix}_CONSTRAINTS c
+            JOIN ALL_CONSTRAINTS c
                 ON c.constraint_name = a.r_constraint_name AND c.owner = a.r_owner
-            JOIN {prefix}_CONS_COLUMNS d
+            JOIN ALL_CONS_COLUMNS d
                 ON d.owner = c.owner
                AND d.constraint_name = c.constraint_name
                AND d.position = b.position
@@ -390,43 +409,42 @@ class OracleMetadataExtractor:
     # ------------------------------------------------------------------
 
     def _extract_views(self, conn: oracledb.Connection, schemas: List[str]) -> List[ViewNode]:
-        prefix = self._prefix
+        # Always use ALL_VIEWS — works for any user privilege level and is more
+        # reliable than DBA_VIEWS for standard application accounts.
+        # Use v.text directly (always present) instead of DBMS_METADATA.GET_DDL
+        # to avoid per-view privilege or object-type errors.
         schema_clause = self._in_clause(schemas, "v.owner")
         sql = f"""
             SELECT
                 v.owner,
                 v.view_name,
-                DBMS_METADATA.GET_DDL('VIEW', v.view_name, v.owner) AS view_text,
+                SUBSTR(v.text, 1, 4000) AS view_text,
                 tc.comments
-            FROM {prefix}_VIEWS v
-            LEFT JOIN {prefix}_TAB_COMMENTS tc
+            FROM ALL_VIEWS v
+            LEFT JOIN ALL_TAB_COMMENTS tc
                 ON tc.owner = v.owner AND tc.table_name = v.view_name
             WHERE {schema_clause}
             ORDER BY v.owner, v.view_name
         """
         views: List[ViewNode] = []
-        with conn.cursor() as cur:
-            # DBMS_METADATA can fail on some views; fall back to v.text
-            try:
+        try:
+            with conn.cursor() as cur:
                 cur.execute(sql, self._bind_schemas(schemas))
                 rows = cur.fetchall()
-            except Exception:
-                sql_fallback = sql.replace(
-                    "DBMS_METADATA.GET_DDL('VIEW', v.view_name, v.owner) AS view_text",
-                    "SUBSTR(v.text, 1, 4000) AS view_text",
-                )
-                cur.execute(sql_fallback, self._bind_schemas(schemas))
-                rows = cur.fetchall()
-
             for row in rows:
-                raw_text = row[2]
-                view_text = str(raw_text) if raw_text else None
-                views.append(ViewNode(
-                    schema=row[0],
-                    name=row[1],
-                    view_text=view_text,
-                    comments=row[3],
-                ))
+                try:
+                    raw_text = row[2]
+                    view_text = str(raw_text).strip() if raw_text else None
+                    views.append(ViewNode(
+                        schema=row[0],
+                        name=row[1],
+                        view_text=view_text,
+                        comments=row[3],
+                    ))
+                except Exception as exc:
+                    logger.warning("Skipping view %s.%s: %s", row[0], row[1], exc)
+        except Exception as exc:
+            logger.warning("Could not extract views from ALL_VIEWS: %s", exc)
 
         # Materialized views
         mview_sql = f"""
@@ -436,24 +454,27 @@ class OracleMetadataExtractor:
                 mv.query,
                 mv.refresh_mode,
                 TO_CHAR(mv.last_refresh_date, 'YYYY-MM-DD HH24:MI:SS') AS last_refresh
-            FROM {prefix}_MVIEWS mv
+            FROM ALL_MVIEWS mv
             WHERE {self._in_clause(schemas, 'mv.owner')}
             ORDER BY mv.owner, mv.mview_name
         """
-        with conn.cursor() as cur:
-            try:
+        try:
+            with conn.cursor() as cur:
                 cur.execute(mview_sql, self._bind_schemas(schemas))
                 for row in cur:
-                    views.append(ViewNode(
-                        schema=row[0],
-                        name=row[1],
-                        view_text=str(row[2])[:4000] if row[2] else None,
-                        is_materialized=True,
-                        refresh_mode=row[3],
-                        last_refresh=row[4],
-                    ))
-            except Exception as exc:
-                logger.warning("Could not extract materialized views: %s", exc)
+                    try:
+                        views.append(ViewNode(
+                            schema=row[0],
+                            name=row[1],
+                            view_text=str(row[2])[:4000] if row[2] else None,
+                            is_materialized=True,
+                            refresh_mode=row[3],
+                            last_refresh=row[4],
+                        ))
+                    except Exception as exc:
+                        logger.warning("Skipping mview %s.%s: %s", row[0], row[1], exc)
+        except Exception as exc:
+            logger.warning("Could not extract materialized views: %s", exc)
 
         logger.debug("Extracted %d views", len(views))
         return views
@@ -533,7 +554,7 @@ class OracleMetadataExtractor:
     def _extract_constraints(
         self, conn: oracledb.Connection, schemas: List[str]
     ) -> List[ConstraintNode]:
-        prefix = self._prefix
+        # Always use ALL_CONSTRAINTS — accessible to any schema owner without DBA.
         schema_clause = self._in_clause(schemas, "a.owner")
         sql = f"""
             SELECT
@@ -544,7 +565,7 @@ class OracleMetadataExtractor:
                 a.search_condition,
                 a.status,
                 a.validated
-            FROM {prefix}_CONSTRAINTS a
+            FROM ALL_CONSTRAINTS a
             WHERE {schema_clause}
               AND a.constraint_type IN ('P', 'R', 'U', 'C')
               AND a.constraint_name NOT LIKE 'SYS_%'
