@@ -1,7 +1,9 @@
 # =============================================================================
 # KnowledgeQL — Application Container
 #
-# python-oracledb (PyPI: oracledb) thin mode requires no Oracle Instant Client.
+# This image runs oracledb in THIN mode (no Oracle Instant Client needed).
+# Thick mode is supported on the host via ORACLE_THICK_MODE=true in .env,
+# but is overridden to false inside the container (see docker-compose.yml).
 # Supports linux/amd64 and linux/arm64 natively.
 # Build:  docker build -t knowledgeql-app .
 # Run:    docker compose -f docker/docker-compose.yml up

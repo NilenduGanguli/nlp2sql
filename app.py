@@ -542,6 +542,8 @@ def _check_oracle_connectivity(config) -> bool:
         if not config.oracle.dsn or not config.oracle.user:
             return False
         # Very short timeout check
+        if config.oracle.thick_mode and oracledb.is_thin_mode():
+            oracledb.init_oracle_client(lib_dir=config.oracle.oracle_lib_dir or None)
         conn = oracledb.connect(
             user=config.oracle.user,
             password=config.oracle.password,

@@ -15,6 +15,9 @@ PW   = os.environ.get("ORACLE_PASSWORD", "KycPassword1")
 TIMEOUT_S  = int(os.environ.get("ORACLE_WAIT_TIMEOUT", "300"))
 INTERVAL_S = 5
 
+if os.environ.get("ORACLE_THICK_MODE", "false").lower() == "true" and oracledb.is_thin_mode():
+    oracledb.init_oracle_client(lib_dir=os.environ.get("ORACLE_LIB_DIR") or None)
+
 print(f"Waiting for Oracle at {DSN} (timeout={TIMEOUT_S}s)...", flush=True)
 
 deadline = time.monotonic() + TIMEOUT_S

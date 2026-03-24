@@ -112,6 +112,9 @@ class OracleMetadataExtractor:
     def extract(self) -> OracleMetadata:
         """Run the full extraction pipeline and return an OracleMetadata object."""
         logger.info("Connecting to Oracle DSN=%s USER=%s", self.config.dsn, self.config.user)
+        if self.config.thick_mode and oracledb.is_thin_mode():
+            oracledb.init_oracle_client(lib_dir=self.config.oracle_lib_dir or None)
+            logger.info("oracledb thick mode enabled")
         conn = oracledb.connect(
             user=self.config.user,
             password=self.config.password,
@@ -125,6 +128,8 @@ class OracleMetadataExtractor:
     def check_connectivity(self) -> bool:
         """Verify that the Oracle connection can be established."""
         try:
+            if self.config.thick_mode and oracledb.is_thin_mode():
+                oracledb.init_oracle_client(lib_dir=self.config.oracle_lib_dir or None)
             conn = oracledb.connect(
                 user=self.config.user,
                 password=self.config.password,

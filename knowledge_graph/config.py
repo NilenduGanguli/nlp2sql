@@ -35,6 +35,14 @@ class OracleConfig:
     use_dba_views: bool = field(
         default_factory=lambda: os.getenv("ORACLE_USE_DBA_VIEWS", "true").lower() == "true"
     )
+    # Enable oracledb thick mode (requires Oracle Instant Client on the host).
+    # Set ORACLE_THICK_MODE=true and optionally ORACLE_LIB_DIR=/path/to/instantclient.
+    thick_mode: bool = field(
+        default_factory=lambda: os.getenv("ORACLE_THICK_MODE", "false").lower() == "true"
+    )
+    oracle_lib_dir: str = field(
+        default_factory=lambda: os.getenv("ORACLE_LIB_DIR", "")
+    )
 
     def __post_init__(self) -> None:
         if not self.target_schemas:

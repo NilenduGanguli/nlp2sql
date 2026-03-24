@@ -17,6 +17,9 @@ DSN  = os.environ.get("ORACLE_DSN", "oracle:1521/FREEPDB1")
 USER = os.environ.get("ORACLE_USER", "kyc")
 PW   = os.environ.get("ORACLE_PASSWORD", "KycPassword1")
 
+if os.environ.get("ORACLE_THICK_MODE", "false").lower() == "true" and oracledb.is_thin_mode():
+    oracledb.init_oracle_client(lib_dir=os.environ.get("ORACLE_LIB_DIR") or None)
+
 INIT_DIR    = Path(__file__).parent.parent / "init"
 SQL_SCRIPTS = ["01_create_tables.sql", "02_load_data.sql"]
 MIN_TABLES  = 8

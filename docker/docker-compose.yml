@@ -61,6 +61,9 @@ services:
       ORACLE_USER: kyc
       ORACLE_PASSWORD: KycPassword1
       ORACLE_TARGET_SCHEMAS: KYC
+      # Container uses thin mode — no Oracle Instant Client in the image.
+      # The host .env may have ORACLE_THICK_MODE=true; override it here.
+      ORACLE_THICK_MODE: "false"
       DEMO_MODE: "false"
       # Vertex AI — leave empty if using OpenAI/Anthropic
       VERTEX_PROJECT: ${VERTEX_PROJECT:-}

@@ -362,6 +362,8 @@ def _oracle_execute(sql: str, config) -> Dict[str, Any]:
         )
 
     start_ms = time.time()
+    if config.oracle.thick_mode and oracledb.is_thin_mode():
+        oracledb.init_oracle_client(lib_dir=config.oracle.oracle_lib_dir or None)
     conn = oracledb.connect(
         user=config.oracle.user,
         password=config.oracle.password,
