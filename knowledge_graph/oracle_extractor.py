@@ -418,7 +418,7 @@ class OracleMetadataExtractor:
             SELECT
                 v.owner,
                 v.view_name,
-                SUBSTR(v.text, 1, 4000) AS view_text,
+                v.text AS view_text,
                 tc.comments
             FROM ALL_VIEWS v
             LEFT JOIN ALL_TAB_COMMENTS tc
@@ -427,11 +427,21 @@ class OracleMetadataExtractor:
             ORDER BY v.owner, v.view_name
         """
         views: List[ViewNode] = []
-        try:
-            with conn.cursor() as cur:
-                cur.execute(sql, self._bind_schemas(schemas))
-                rows = cur.fetchall()
-            for row in rows:
+        sql_fallback = sql.replace(
+            "v.text AS view_text",
+            "SUBSTR(v.text, 1, 32767) AS view_text",
+        )
+        sql_names_only = f"""
+            SELECT v.owner, v.view_name, NULL AS view_text, tc.comments
+            FROM ALL_VIEWS v
+            LEFT JOIN ALL_TAB_COMMENTS tc
+                ON tc.owner = v.owner AND tc.table_name = v.view_name
+            WHERE {schema_clause}
+            ORDER BY v.owner, v.view_name
+        """
+
+        def _build_view_nodes(rows_: list) -> None:
+            for row in rows_:
                 try:
                     raw_text = row[2]
                     view_text = str(raw_text).strip() if raw_text else None
@@ -443,8 +453,28 @@ class OracleMetadataExtractor:
                     ))
                 except Exception as exc:
                     logger.warning("Skipping view %s.%s: %s", row[0], row[1], exc)
-        except Exception as exc:
-            logger.warning("Could not extract views from ALL_VIEWS: %s", exc)
+
+        fetched = False
+        for attempt_sql, label in [
+            (sql, "full v.text"),
+            (sql_fallback, "SUBSTR(v.text, 32767)"),
+            (sql_names_only, "names only (no text)"),
+        ]:
+            if fetched:
+                break
+            try:
+                with conn.cursor() as cur:
+                    cur.execute(attempt_sql, self._bind_schemas(schemas))
+                    rows = cur.fetchall()
+                _build_view_nodes(rows)
+                fetched = True
+                if label != "full v.text":
+                    logger.warning("Views extracted with fallback strategy: %s", label)
+            except Exception as exc:
+                logger.warning("View fetch attempt '%s' failed: %s — trying next strategy", label, exc)
+
+        if not fetched:
+            logger.error("All view fetch strategies failed; no views will be in the graph")
 
         # Materialized views
         mview_sql = f"""

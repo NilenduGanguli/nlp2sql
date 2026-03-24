@@ -158,37 +158,45 @@ def initialize_graph(
     # ------------------------------------------------------------------
     logger.info("Building in-memory knowledge graph…")
     build_start = time.monotonic()
+    graph = KnowledgeGraph()
+    build_stats: Dict[str, Any] = {}
     try:
         builder = GraphBuilder(config)
         build_stats = builder.build(metadata)
         graph = builder.graph
+    except Exception as exc:
+        logger.exception("Graph build failed — tables/columns could not be loaded: %s", exc)
+        report["build"] = {"error": str(exc), "elapsed_seconds": round(time.monotonic() - build_start, 1)}
+        return graph, report
+    build_elapsed = time.monotonic() - build_start
+    report["build"] = {**build_stats, "elapsed_seconds": round(build_elapsed, 1)}
 
-        # ------------------------------------------------------------------
-        # Step 4: Infer business glossary from Oracle metadata
-        # ------------------------------------------------------------------
-        logger.info("Inferring business glossary from Oracle metadata…")
+    # ------------------------------------------------------------------
+    # Step 4: Infer business glossary from Oracle metadata
+    # ------------------------------------------------------------------
+    logger.info("Inferring business glossary from Oracle metadata…")
+    glossary_stats: Dict[str, Any] = {}
+    try:
         glossary_builder = InferredGlossaryBuilder(graph)
         glossary_stats = glossary_builder.build(metadata)
-        report["glossary"] = glossary_stats
+    except Exception as exc:
+        logger.warning("Glossary inference failed (graph is still usable): %s", exc)
+    report["glossary"] = glossary_stats
 
-        # ------------------------------------------------------------------
-        # Step 5: Validate
-        # ------------------------------------------------------------------
-        if not refresh_only:
-            logger.info("Running graph validation checks…")
+    # ------------------------------------------------------------------
+    # Step 5: Validate
+    # ------------------------------------------------------------------
+    if not refresh_only:
+        logger.info("Running graph validation checks…")
+        try:
             validation_passed = validate_graph(graph)
             report["validation_passed"] = validation_passed
             if not validation_passed:
                 logger.warning("Graph validation found issues — review logs above")
-        else:
-            report["validation_passed"] = True
-
-    except Exception as exc:
-        logger.exception("Graph build failed: %s", exc)
-        return KnowledgeGraph(), report
-
-    build_elapsed = time.monotonic() - build_start
-    report["build"] = {**build_stats, "elapsed_seconds": round(build_elapsed, 1)}
+        except Exception as exc:
+            logger.warning("Graph validation raised an error (graph is still usable): %s", exc)
+    else:
+        report["validation_passed"] = True
 
     total_elapsed = time.monotonic() - start_time
     report["elapsed_seconds"] = round(total_elapsed, 1)
