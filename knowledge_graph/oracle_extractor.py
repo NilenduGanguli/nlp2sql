@@ -194,7 +194,7 @@ class OracleMetadataExtractor:
         self._flag_columns(meta)
 
         # Collect sample data for each table
-        meta.sample_data = self._collect_sample_data(conn, meta.tables)
+        meta.sample_data = self._collect_sample_data(conn, meta.tables, meta.columns)
         self._attach_sample_data(meta)
 
         logger.info("Extraction complete. %s", meta.summary())
@@ -803,18 +803,52 @@ class OracleMetadataExtractor:
     # ------------------------------------------------------------------
 
     def _collect_sample_data(
-        self, conn: oracledb.Connection, tables: List[TableNode]
+        self, conn: oracledb.Connection, tables: List[TableNode], columns: List["ColumnNode"]
     ) -> Dict[str, List[Dict[str, Any]]]:
         """
-        Fetch a small sample of rows from each table.
-        Uses FETCH FIRST N ROWS ONLY (Oracle 12c+).
-        Rows are returned as dicts keyed by column name.
+        Fetch a small sample of rows from each table using an explicit column list.
+
+        SELECT * is intentionally avoided: tables may contain XMLTYPE, BLOB,
+        LONG, SDO_GEOMETRY, or other driver-unsupported types that cause
+        oracledb's C layer to segfault inside fetchall() before Python's
+        exception handler can intervene.  By restricting to well-known primitive
+        types we guarantee the query is safe to fetch.
         """
+        # Types whose values are safe to fetch as plain Python scalars.
+        # Anything not in this set (BLOB, CLOB, XMLTYPE, LONG, RAW, object
+        # types, etc.) is silently excluded from the sample SELECT.
+        _SAFE_PREFIXES = frozenset({
+            "CHAR", "NCHAR", "VARCHAR", "NVARCHAR",        # string family
+            "NUMBER", "FLOAT", "INTEGER", "SMALLINT",       # numeric family
+            "BINARY_FLOAT", "BINARY_DOUBLE",
+            "DATE",                                          # date/time family
+            "TIMESTAMP", "INTERVAL",
+            "BOOLEAN",
+        })
+
+        def _is_safe(data_type: str) -> bool:
+            dt = (data_type or "").upper().split("(")[0].strip()
+            return any(dt.startswith(p) for p in _SAFE_PREFIXES)
+
+        # Build table_fqn → [safe column names] from the already-extracted metadata
+        from collections import defaultdict
+        safe_col_map: Dict[str, List[str]] = defaultdict(list)
+        for col in columns:
+            if _is_safe(col.data_type or ""):
+                safe_col_map[col.table_fqn].append(col.name)
+
         result: Dict[str, List[Dict[str, Any]]] = {}
         n = self.config.sample_rows
         for table in tables:
+            safe_cols = safe_col_map.get(table.fqn, [])
+            if not safe_cols:
+                logger.debug("No safe columns to sample for %s.%s", table.schema, table.name)
+                result[table.fqn] = []
+                continue
+
+            col_list = ", ".join(f'"{c}"' for c in safe_cols[:50])  # cap at 50 cols
             sql = (
-                f'SELECT * FROM "{table.schema}"."{table.name}" '
+                f'SELECT {col_list} FROM "{table.schema}"."{table.name}" '
                 f"FETCH FIRST {n} ROWS ONLY"
             )
             try:
@@ -824,11 +858,10 @@ class OracleMetadataExtractor:
                     rows = []
                     for row in cur.fetchall():
                         row_dict: Dict[str, Any] = {}
-                        for col, val in zip(col_names, row):
-                            # Truncate large values to keep graph lean
+                        for col_name, val in zip(col_names, row):
                             if isinstance(val, str) and len(val) > 200:
                                 val = val[:200] + "..."
-                            row_dict[col] = val
+                            row_dict[col_name] = val
                         rows.append(row_dict)
                     result[table.fqn] = rows
             except Exception as exc:

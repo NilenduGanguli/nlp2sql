@@ -286,27 +286,49 @@ class GraphBuilder:
         table_fqns = {t.fqn for t in metadata.tables}
         G.add_nodes_from(table_fqns)
 
-        col_to_table: Dict[str, str] = {col.fqn: col.table_fqn for col in metadata.columns}
-
+        # Derive table FQN directly from the column FQN (SCHEMA.TABLE.COLUMN →
+        # SCHEMA.TABLE) instead of looking it up in col_to_table.  The column
+        # FQN is always built as f"{owner}.{table}.{col}" with .upper() applied,
+        # so rsplit(".", 1) is reliable.  This makes FK graph construction
+        # independent of whether metadata.columns is complete — a partial column
+        # extraction (skipped rows, type errors) previously caused all FKs to
+        # resolve to None → no linked tables → no JOIN_PATHs.
+        fk_edges_added = 0
         for fk in metadata.foreign_keys:
-            src_table = col_to_table.get(fk.source_col_fqn)
-            tgt_table = col_to_table.get(fk.target_col_fqn)
-            if src_table and tgt_table and src_table != tgt_table:
-                G.add_edge(src_table, tgt_table,
-                           src_col=fk.source_col_fqn,
-                           tgt_col=fk.target_col_fqn,
-                           constraint_name=fk.constraint_name)
-                G.add_edge(tgt_table, src_table,
-                           src_col=fk.target_col_fqn,
-                           tgt_col=fk.source_col_fqn,
-                           constraint_name=fk.constraint_name + "_REV")
+            src_parts = fk.source_col_fqn.rsplit(".", 1)
+            tgt_parts = fk.target_col_fqn.rsplit(".", 1)
+            if len(src_parts) != 2 or len(tgt_parts) != 2:
+                continue
+            src_table, tgt_table = src_parts[0], tgt_parts[0]
+            if src_table == tgt_table:
+                continue
+            G.add_edge(src_table, tgt_table,
+                       src_col=fk.source_col_fqn,
+                       tgt_col=fk.target_col_fqn,
+                       constraint_name=fk.constraint_name)
+            G.add_edge(tgt_table, src_table,
+                       src_col=fk.target_col_fqn,
+                       tgt_col=fk.source_col_fqn,
+                       constraint_name=fk.constraint_name + "_REV")
+            fk_edges_added += 1
+
+        logger.info(
+            "FK graph: %d FK relationships → %d directed edges across %d unique tables",
+            len(metadata.foreign_keys), fk_edges_added * 2,
+            len({e for fk in metadata.foreign_keys
+                 for e in [fk.source_col_fqn.rsplit(".", 1)[0],
+                            fk.target_col_fqn.rsplit(".", 1)[0]]
+                 if "." in fk.source_col_fqn and "." in fk.target_col_fqn}),
+        )
 
         # Only process tables that are actually connected via FK edges.
-        # Isolated tables (no FK edges) cannot yield JOIN_PATHs and processing
-        # all O(n²) pairs including them wastes time and risks OOM.
         linked_tables = [n for n in G.nodes() if G.degree(n) > 0]
         if not linked_tables:
-            logger.info("No FK-linked tables found; skipping JOIN_PATH computation")
+            logger.warning(
+                "No FK-linked tables found — JOIN_PATH skipped. "
+                "FKs extracted: %d. Check FK extraction logs for errors.",
+                len(metadata.foreign_keys),
+            )
             return []
 
         logger.info(
