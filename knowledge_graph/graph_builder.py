@@ -314,8 +314,11 @@ class GraphBuilder:
             len(linked_tables), len(table_fqns),
         )
 
-        # Work on the undirected view once — reused for all pair lookups.
-        G_undirected = G.to_undirected(as_view=True)
+        # Materialize a real undirected copy — not a live view.
+        # as_view=True shares internal C-level adjacency dicts with the original
+        # MultiDiGraph; repeated shortest_path traversals through the view proxy
+        # can dereference stale memory in certain NetworkX/CPython builds.
+        G_undirected = G.to_undirected(as_view=False)
 
         join_paths: List[JoinPathRel] = []
         seen_pairs: Set[Tuple[str, str]] = set()
@@ -395,7 +398,7 @@ class GraphBuilder:
             _MAX_COLS_LEVENSHTEIN (the pair count would be prohibitive).
         """
         _MAX_COL_NAME = 64          # skip derived/expression column names
-        _MAX_COLS_LEVENSHTEIN = 2000  # ~2 million pairs max
+        _MAX_COLS_LEVENSHTEIN = 500   # ~125K pairs max; beyond this the C heap thrashes
 
         max_dist = self.config.similarity_levenshtein_max
         min_score = self.config.similarity_min_score
