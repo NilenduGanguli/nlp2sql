@@ -74,24 +74,44 @@ def get_llm(config):
                 "Install it with: pip install langchain-google-vertexai"
             ) from exc
 
-        model_name = config.llm_model or "gemini-1.5-pro"
+        # Vertex AI requires versioned model names (e.g. "gemini-2.5-flash").
+        # The unversioned alias "gemini-1.5-pro" is not valid via Vertex AI endpoints.
+        model_name = config.llm_model or "gemini-2.5-flash"
         project = getattr(config, "vertex_project", None) or os.getenv("VERTEX_PROJECT", "")
         location = getattr(config, "vertex_location", None) or os.getenv("VERTEX_LOCATION", "us-central1")
 
+        # Explicitly load service account credentials from GOOGLE_APPLICATION_CREDENTIALS.
+        # Falls back to ADC (gcloud login / Workload Identity) when the var is not set.
+        credentials = None
+        creds_path = os.getenv("GOOGLE_APPLICATION_CREDENTIALS", "")
+        if creds_path:
+            try:
+                from google.oauth2 import service_account
+                credentials = service_account.Credentials.from_service_account_file(
+                    creds_path,
+                    scopes=["https://www.googleapis.com/auth/cloud-platform"],
+                )
+                logger.info("Vertex AI: loaded service account from %s", creds_path)
+            except Exception as exc:
+                raise ValueError(
+                    f"GOOGLE_APPLICATION_CREDENTIALS is set to '{creds_path}' "
+                    f"but the file could not be loaded: {exc}"
+                ) from exc
+        else:
+            logger.info("Vertex AI: GOOGLE_APPLICATION_CREDENTIALS not set — using ADC")
+
         logger.info(
-            "Using Vertex AI provider: project=%s, location=%s, model=%s",
+            "Using Vertex AI: project=%s, location=%s, model=%s",
             project or "(ADC default)", location, model_name,
         )
-        # Authentication via google-auth Application Default Credentials:
-        #   - GOOGLE_APPLICATION_CREDENTIALS → service account JSON file path
-        #   - `gcloud auth application-default login` (local dev)
-        #   - Workload Identity (GKE / Cloud Run)
         return ChatVertexAI(
             model_name=model_name,
             project=project or None,
             location=location,
+            credentials=credentials,
             temperature=0,
             max_output_tokens=4096,
+            thinking_budget=0,  # disable extended thinking — halts latency on 2.5 Flash
         )
 
     # ── OpenAI (default) ──────────────────────────────────────────────────────

@@ -77,8 +77,8 @@ st.markdown(
         border-left: 3px solid #2e86de;
         margin-bottom: 0.5rem;
     }
-    .metric-label { font-size: 0.75rem; color: #6c757d; text-transform: uppercase; }
-    .metric-value { font-size: 1.1rem; font-weight: 600; color: #212529; }
+    .metric-label { font-size: 0.65rem; color: #6c757d; text-transform: uppercase; }
+    .metric-value { font-size: 0.82rem; font-weight: 600; color: #212529; word-break: break-word; }
 
     /* SQL block */
     .sql-block {
@@ -696,16 +696,29 @@ def _render_assistant_message(content: str, result: Optional[Dict[str, Any]]) ->
 
     # Metrics row
     if total_rows > 0 or source:
+        try:
+            oracle_svc = st.session_state.config.oracle.dsn.split("/")[-1].upper()
+        except Exception:
+            oracle_svc = source.upper()
+
+        def _m(label: str, value: str) -> str:
+            return (
+                f"<div class='metric-card'>"
+                f"<div class='metric-label'>{label}</div>"
+                f"<div class='metric-value'>{value}</div>"
+                f"</div>"
+            )
+
+        tables_str = ", ".join(tables_used) if tables_used else "—"
         metric_cols = st.columns(4)
         with metric_cols[0]:
-            st.metric("Rows", f"{total_rows:,}")
+            st.markdown(_m("Rows", f"{total_rows:,}"), unsafe_allow_html=True)
         with metric_cols[1]:
-            st.metric("Time", f"{exec_ms / 1000:.2f}s")
+            st.markdown(_m("Time", f"{exec_ms / 1000:.2f}s"), unsafe_allow_html=True)
         with metric_cols[2]:
-            st.metric("Source", source.upper())
+            st.markdown(_m("Oracle DB", oracle_svc), unsafe_allow_html=True)
         with metric_cols[3]:
-            if tables_used:
-                st.metric("Tables", ", ".join(tables_used[:2]))
+            st.markdown(_m("Tables", tables_str), unsafe_allow_html=True)
 
     # Data table
     if columns and rows:

@@ -177,8 +177,12 @@ def build_pipeline(graph, config, llm=None):
 
     from agent.nodes import context_builder, query_executor, query_optimizer, result_formatter, sql_validator
 
-    # Resolve LLM if needed
-    if llm is None and getattr(config, "llm_api_key", ""):
+    # Resolve LLM if needed.
+    # Vertex AI uses no API key (authenticates via service account / ADC), so we
+    # check the provider explicitly instead of relying on llm_api_key being set.
+    _provider = getattr(config, "llm_provider", "").lower()
+    _has_credentials = bool(getattr(config, "llm_api_key", "")) or (_provider == "vertex")
+    if llm is None and _has_credentials:
         try:
             from agent.llm import get_llm
             llm = get_llm(config)
