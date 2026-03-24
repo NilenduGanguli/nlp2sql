@@ -67,20 +67,19 @@ def get_llm(config):
     # ── Google Vertex AI ──────────────────────────────────────────────────────
     if provider == "vertex":
         try:
-            from langchain_google_vertexai import ChatVertexAI
+            from google import genai
+            from langchain_google_genai import ChatGoogleGenerativeAI
         except ImportError as exc:
             raise ImportError(
-                "langchain-google-vertexai is required for Vertex AI provider. "
-                "Install it with: pip install langchain-google-vertexai"
+                "google-genai and langchain-google-genai are required for Vertex AI. "
+                "Install with: pip install google-genai langchain-google-genai"
             ) from exc
 
-        # Vertex AI requires versioned model names (e.g. "gemini-2.5-flash").
-        # The unversioned alias "gemini-1.5-pro" is not valid via Vertex AI endpoints.
         model_name = config.llm_model or "gemini-2.5-flash"
         project = getattr(config, "vertex_project", None) or os.getenv("VERTEX_PROJECT", "")
         location = getattr(config, "vertex_location", None) or os.getenv("VERTEX_LOCATION", "us-central1")
 
-        # Explicitly load service account credentials from GOOGLE_APPLICATION_CREDENTIALS.
+        # Load service account credentials from GOOGLE_APPLICATION_CREDENTIALS.
         # Falls back to ADC (gcloud login / Workload Identity) when the var is not set.
         credentials = None
         creds_path = os.getenv("GOOGLE_APPLICATION_CREDENTIALS", "")
@@ -100,18 +99,23 @@ def get_llm(config):
         else:
             logger.info("Vertex AI: GOOGLE_APPLICATION_CREDENTIALS not set — using ADC")
 
-        logger.info(
-            "Using Vertex AI: project=%s, location=%s, model=%s",
-            project or "(ADC default)", location, model_name,
-        )
-        return ChatVertexAI(
-            model_name=model_name,
+        client = genai.Client(
+            vertexai=True,
             project=project or None,
             location=location,
             credentials=credentials,
+        )
+        logger.info(
+            "Vertex AI genai.Client initialised: project=%s, location=%s, model=%s",
+            project or "(ADC default)", location, model_name,
+        )
+        return ChatGoogleGenerativeAI(
+            model=model_name,
+            client=client,
+            vertexai=True,
             temperature=0,
             max_output_tokens=4096,
-            thinking_budget=0,  # disable extended thinking — halts latency on 2.5 Flash
+            thinking_budget=0,  # disable extended thinking — eliminates latency on 2.5 Flash
         )
 
     # ── OpenAI (default) ──────────────────────────────────────────────────────
