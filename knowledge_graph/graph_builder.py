@@ -83,69 +83,68 @@ class GraphBuilder:
         """
         Execute the full graph construction pipeline.
         Returns a dict of {step_name: nodes_written} for diagnostics.
+
+        Every step is individually guarded: a failure in one step is logged and
+        skipped so the rest of the graph is still built.
         """
         stats: Dict[str, int] = {}
 
-        logger.info("Step 1/13: Upserting Schema nodes")
-        stats["schemas"] = self._build_schemas(metadata)
-
-        logger.info("Step 2/13: Upserting Table nodes + BELONGS_TO")
-        stats["tables"] = self._build_tables(metadata)
-
-        logger.info("Step 3/13: Upserting Column nodes + HAS_COLUMN")
-        stats["columns"] = self._build_columns(metadata)
-
-        logger.info("Step 4/13: Creating HAS_PRIMARY_KEY edges")
-        stats["primary_keys"] = self._build_primary_keys(metadata)
-
-        logger.info("Step 5/13: Creating HAS_FOREIGN_KEY edges")
-        stats["foreign_keys"] = self._build_foreign_keys(metadata)
-
-        logger.info("Step 6/13: Upserting Index nodes + HAS_INDEX / INDEXED_BY")
-        stats["indexes"] = self._build_indexes(metadata)
-
-        logger.info("Step 7/13: Upserting Constraint nodes + HAS_CONSTRAINT")
-        stats["constraints"] = self._build_constraints(metadata)
-
-        logger.info("Step 8/13: Upserting View nodes + DEPENDS_ON")
-        stats["views"] = self._build_views(metadata)
-
-        logger.info("Step 9/13: Upserting Procedure nodes")
-        stats["procedures"] = self._build_procedures(metadata)
-
-        logger.info("Step 10/13: Upserting Synonym nodes")
-        stats["synonyms"] = self._build_synonyms(metadata)
-
-        logger.info("Step 11/13: Upserting Sequence nodes + BELONGS_TO")
-        stats["sequences"] = self._build_sequences(metadata)
+        _steps = [
+            ("schemas",      "Schema nodes",                  self._build_schemas),
+            ("tables",       "Table nodes + BELONGS_TO",      self._build_tables),
+            ("columns",      "Column nodes + HAS_COLUMN",     self._build_columns),
+            ("primary_keys", "HAS_PRIMARY_KEY edges",         self._build_primary_keys),
+            ("foreign_keys", "HAS_FOREIGN_KEY edges",         self._build_foreign_keys),
+            ("indexes",      "Index nodes + HAS_INDEX",       self._build_indexes),
+            ("constraints",  "Constraint nodes",              self._build_constraints),
+            ("views",        "View nodes + DEPENDS_ON",       self._build_views),
+            ("procedures",   "Procedure nodes",               self._build_procedures),
+            ("synonyms",     "Synonym nodes",                 self._build_synonyms),
+            ("sequences",    "Sequence nodes",                self._build_sequences),
+        ]
+        for i, (key, label, fn) in enumerate(_steps, start=1):
+            logger.info("Step %d/%d: %s", i, len(_steps) + 2, label)
+            try:
+                stats[key] = fn(metadata)
+            except Exception as exc:
+                logger.warning("Step '%s' failed — skipping: %s", label, exc)
+                stats[key] = 0
 
         logger.info("Step 12/13: Computing and storing JOIN_PATH edges")
-        join_paths = self._compute_join_paths(metadata)
-        for jp in join_paths:
-            self.graph.merge_edge(
-                "JOIN_PATH",
-                jp.source_table_fqn,
-                jp.target_table_fqn,
-                merge_key="path_key",
-                path_key=f"{jp.source_table_fqn}>>{jp.target_table_fqn}",
-                join_columns=jp.join_columns,
-                join_type=jp.join_type,
-                cardinality=jp.cardinality,
-                weight=jp.weight,
-            )
-        stats["join_paths"] = len(join_paths)
+        try:
+            join_paths = self._compute_join_paths(metadata)
+            for jp in join_paths:
+                self.graph.merge_edge(
+                    "JOIN_PATH",
+                    jp.source_table_fqn,
+                    jp.target_table_fqn,
+                    merge_key="path_key",
+                    path_key=f"{jp.source_table_fqn}>>{jp.target_table_fqn}",
+                    join_columns=jp.join_columns,
+                    join_type=jp.join_type,
+                    cardinality=jp.cardinality,
+                    weight=jp.weight,
+                )
+            stats["join_paths"] = len(join_paths)
+        except Exception as exc:
+            logger.warning("JOIN_PATH computation failed — skipping: %s", exc)
+            stats["join_paths"] = 0
 
         logger.info("Step 13/13: Computing and storing SIMILAR_TO edges")
-        similar_to = self._compute_similar_to(metadata)
-        for st in similar_to:
-            self.graph.merge_edge(
-                "SIMILAR_TO",
-                st.source_col_fqn,
-                st.target_col_fqn,
-                similarity_score=st.similarity_score,
-                match_type=st.match_type,
-            )
-        stats["similar_to"] = len(similar_to)
+        try:
+            similar_to = self._compute_similar_to(metadata)
+            for st in similar_to:
+                self.graph.merge_edge(
+                    "SIMILAR_TO",
+                    st.source_col_fqn,
+                    st.target_col_fqn,
+                    similarity_score=st.similarity_score,
+                    match_type=st.match_type,
+                )
+            stats["similar_to"] = len(similar_to)
+        except Exception as exc:
+            logger.warning("SIMILAR_TO computation failed — skipping: %s", exc)
+            stats["similar_to"] = 0
 
         logger.info("Graph build complete. Stats: %s", stats)
         return stats
@@ -277,6 +276,9 @@ class GraphBuilder:
         """
         Build a directed multigraph of Table → Table connected by FK constraints,
         then compute shortest paths up to max_join_path_hops hops.
+
+        Only tables that participate in at least one FK edge are included in
+        path computation — isolated tables produce no JOIN_PATH edges.
         """
         max_hops = self.config.max_join_path_hops
         G = nx.MultiDiGraph()
@@ -299,16 +301,31 @@ class GraphBuilder:
                            tgt_col=fk.source_col_fqn,
                            constraint_name=fk.constraint_name + "_REV")
 
+        # Only process tables that are actually connected via FK edges.
+        # Isolated tables (no FK edges) cannot yield JOIN_PATHs and processing
+        # all O(n²) pairs including them wastes time and risks OOM.
+        linked_tables = [n for n in G.nodes() if G.degree(n) > 0]
+        if not linked_tables:
+            logger.info("No FK-linked tables found; skipping JOIN_PATH computation")
+            return []
+
+        logger.info(
+            "Computing JOIN_PATHs for %d FK-linked tables (out of %d total)",
+            len(linked_tables), len(table_fqns),
+        )
+
+        # Work on the undirected view once — reused for all pair lookups.
+        G_undirected = G.to_undirected(as_view=True)
+
         join_paths: List[JoinPathRel] = []
         seen_pairs: Set[Tuple[str, str]] = set()
-        table_list = list(table_fqns)
 
-        for i, src in enumerate(table_list):
-            for tgt in table_list[i + 1:]:
+        for i, src in enumerate(linked_tables):
+            for tgt in linked_tables[i + 1:]:
                 if (src, tgt) in seen_pairs:
                     continue
                 try:
-                    path_nodes = nx.shortest_path(G.to_undirected(as_view=True), src, tgt)
+                    path_nodes = nx.shortest_path(G_undirected, src, tgt)
                 except (nx.NetworkXNoPath, nx.NodeNotFound):
                     continue
 
@@ -370,7 +387,16 @@ class GraphBuilder:
           1. Exact name match          – score 1.0, type 'exact'
           2. Common FK suffix pattern  – score 0.9, type 'suffix'
           3. Levenshtein edit distance – score based on length-normalised dist
+
+        Strategy 3 is O(n²) and uses a C extension (python-Levenshtein).
+        To prevent memory exhaustion and segfaults on large schemas:
+          - Columns with names longer than _MAX_COL_NAME are excluded.
+          - The strategy is skipped entirely when remaining candidates exceed
+            _MAX_COLS_LEVENSHTEIN (the pair count would be prohibitive).
         """
+        _MAX_COL_NAME = 64          # skip derived/expression column names
+        _MAX_COLS_LEVENSHTEIN = 2000  # ~2 million pairs max
+
         max_dist = self.config.similarity_levenshtein_max
         min_score = self.config.similarity_min_score
 
@@ -415,22 +441,38 @@ class GraphBuilder:
                 for c2 in cols[i + 1:]:
                     _add(c1, c2, 0.9, "suffix")
 
-        # Strategy 3: Levenshtein distance on all remaining column pairs
-        all_cols = metadata.columns
-        for i, c1 in enumerate(all_cols):
-            for c2 in all_cols[i + 1:]:
-                if c1.table_fqn == c2.table_fqn:
-                    continue
-                n1, n2 = c1.name.upper(), c2.name.upper()
-                key = (min(c1.fqn, c2.fqn), max(c1.fqn, c2.fqn))
-                if key in seen:
-                    continue
-                dist = levenshtein_distance(n1, n2)
-                if dist <= max_dist:
-                    max_len = max(len(n1), len(n2), 1)
-                    score = round(1.0 - dist / max_len, 4)
-                    if score >= min_score:
-                        _add(c1, c2, score, "levenshtein")
+        # Strategy 3: Levenshtein distance on remaining column pairs.
+        # Exclude columns with very long names (view derived expressions) and
+        # bail out entirely if the candidate set is too large.
+        lev_candidates = [
+            c for c in metadata.columns if len(c.name) <= _MAX_COL_NAME
+        ]
+        if len(lev_candidates) > _MAX_COLS_LEVENSHTEIN:
+            logger.warning(
+                "Skipping Levenshtein SIMILAR_TO strategy: %d candidate columns "
+                "exceeds threshold %d — would produce ~%d comparisons",
+                len(lev_candidates), _MAX_COLS_LEVENSHTEIN,
+                len(lev_candidates) * (len(lev_candidates) - 1) // 2,
+            )
+        else:
+            for i, c1 in enumerate(lev_candidates):
+                for c2 in lev_candidates[i + 1:]:
+                    if c1.table_fqn == c2.table_fqn:
+                        continue
+                    n1, n2 = c1.name.upper(), c2.name.upper()
+                    key = (min(c1.fqn, c2.fqn), max(c1.fqn, c2.fqn))
+                    if key in seen:
+                        continue
+                    try:
+                        dist = levenshtein_distance(n1, n2)
+                    except Exception as exc:
+                        logger.debug("levenshtein_distance failed for %s/%s: %s", n1, n2, exc)
+                        continue
+                    if dist <= max_dist:
+                        max_len = max(len(n1), len(n2), 1)
+                        score = round(1.0 - dist / max_len, 4)
+                        if score >= min_score:
+                            _add(c1, c2, score, "levenshtein")
 
         logger.info("Computed %d SIMILAR_TO edges", len(similar_to))
         return similar_to
