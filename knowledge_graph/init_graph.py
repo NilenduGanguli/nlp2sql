@@ -30,10 +30,16 @@ Incremental refresh (only changed objects since last run)::
 from __future__ import annotations
 
 import argparse
+import faulthandler
 import logging
 import sys
 import time
 from typing import Any, Dict, Optional, Tuple
+
+# Enable faulthandler immediately — if any C extension (oracledb OCI, Levenshtein,
+# NetworkX C accelerators) triggers SIGSEGV, Python prints the C-level thread
+# stack to stderr before the process dies, showing exactly which frame crashed.
+faulthandler.enable(file=sys.stderr, all_threads=True)
 
 from knowledge_graph.config import GraphConfig
 from knowledge_graph.oracle_extractor import OracleMetadataExtractor

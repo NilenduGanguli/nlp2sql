@@ -458,6 +458,16 @@ class GraphBuilder:
                 len(lev_candidates) * (len(lev_candidates) - 1) // 2,
             )
         else:
+            # Smoke-test the C extension with a trivial call before entering the
+            # O(n²) loop.  A bad install or ABI mismatch in python-Levenshtein
+            # can cause SIGSEGV on the very first call; catching it here means
+            # we skip the strategy rather than crashing the whole build.
+            try:
+                _smoke = levenshtein_distance("a", "b")
+            except Exception as exc:
+                logger.warning("Levenshtein smoke test failed — skipping strategy 3: %s", exc)
+                lev_candidates = []
+
             for i, c1 in enumerate(lev_candidates):
                 for c2 in lev_candidates[i + 1:]:
                     if c1.table_fqn == c2.table_fqn:

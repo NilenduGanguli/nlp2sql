@@ -120,6 +120,23 @@ class OracleMetadataExtractor:
             password=self.config.password,
             dsn=self.config.dsn,
         )
+        # In thick mode (OCI), LONG columns (ALL_VIEWS.text) default to a
+        # 32 767-byte C buffer.  Any view definition longer than that causes OCI
+        # to write past the buffer boundary → SIGSEGV signal 11.
+        # Setting a connection-level output-type handler increases that buffer to
+        # 1 MB and also applies in thin mode (harmlessly: Python already returns
+        # the full string).  OCI truncates cleanly at the declared size rather
+        # than overflowing, so there is no crash even for very large views.
+        _LONG_BUFFER = 1024 * 1024  # 1 MB — covers every realistic view definition
+        _db_type_long = getattr(oracledb, "DB_TYPE_LONG", None)
+
+        def _long_output_handler(cursor, name, default_type, size, precision, scale):
+            if _db_type_long is not None and default_type == _db_type_long:
+                # arraysize=1 here limits OCI's prefetch array to 1 slot so total
+                # LONG buffer is exactly _LONG_BUFFER bytes, not cursor.arraysize × that.
+                return cursor.var(_db_type_long, _LONG_BUFFER, 1)
+
+        conn.outputtypehandler = _long_output_handler
         try:
             return self._extract_all(conn)
         finally:
