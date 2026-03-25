@@ -10,6 +10,7 @@ Run with:
 from __future__ import annotations
 
 import json
+import logging
 import os
 import sys
 import time
@@ -20,6 +21,8 @@ from typing import Any, Dict, List, Optional
 # Path setup
 # ---------------------------------------------------------------------------
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+logger = logging.getLogger(__name__)
 
 import streamlit as st
 
@@ -127,6 +130,17 @@ st.markdown(
         margin-bottom: 1rem;
     }
 
+    /* Ensure result dataframes scroll horizontally — Streamlit's chat container
+       can clip the default overflow. */
+    [data-testid="stDataFrame"] > iframe {
+        width: 100% !important;
+        min-width: 0;
+    }
+    [data-testid="stChatMessage"] [data-testid="stDataFrame"] {
+        overflow-x: auto !important;
+    }
+    .stDataFrame { overflow-x: auto !important; }
+
     /* Footer */
     .footer {
         text-align: center;
@@ -190,6 +204,9 @@ def init_session_state() -> None:
 
     if "pending_query" not in st.session_state:
         st.session_state.pending_query = None
+
+    if "graph_llm_enhanced" not in st.session_state:
+        st.session_state.graph_llm_enhanced = False
 
 
 # ---------------------------------------------------------------------------
@@ -559,13 +576,15 @@ def _render_schema_explorer(graph) -> None:
     """Render expandable table/column list in the sidebar."""
     from knowledge_graph.traversal import list_all_tables, get_columns_for_table
 
-    tables = list_all_tables(graph, schema="KYC", skip=0, limit=50)
+    tables = list_all_tables(graph, schema=None, skip=0, limit=200)
 
     for table in tables:
         table_name = table.get("name", "")
+        schema_name = table.get("schema", "")
         row_count = table.get("row_count")
         row_str = f" (~{row_count:,} rows)" if row_count else ""
-        with st.expander(f"{table_name}{row_str}", expanded=False):
+        label = f"{schema_name}.{table_name}" if schema_name else table_name
+        with st.expander(f"{label}{row_str}", expanded=False):
             cols = get_columns_for_table(graph, table.get("fqn", ""))
             for col in cols:
                 col_name = col.get("name", "")
@@ -692,7 +711,10 @@ def _render_assistant_message(content: str, result: Optional[Dict[str, Any]]) ->
             with btn_cols[0]:
                 if st.button("Open in Editor", key=f"edit_{hash(sql)}", help="Open this SQL in the editor tab"):
                     st.session_state.selected_sql = sql
-                    st.info("SQL copied to editor tab.")
+                    # Must update the text_area widget's own session-state key so
+                    # Streamlit doesn't ignore the new value on the next rerun.
+                    st.session_state["editor_sql_input"] = sql
+                    st.rerun()
             if explanation:
                 st.caption(f"Explanation: {explanation}")
 
@@ -727,7 +749,7 @@ def _render_assistant_message(content: str, result: Optional[Dict[str, Any]]) ->
         import pandas as pd
         try:
             df = pd.DataFrame(rows, columns=columns)
-            st.dataframe(df, width="stretch", height=300)
+            st.dataframe(df, use_container_width=True, height=300, hide_index=True)
         except Exception as exc:
             st.warning(f"Could not render dataframe: {exc}")
             st.json({"columns": columns, "rows": rows[:5]})
@@ -854,6 +876,7 @@ def render_sql_editor_tab() -> None:
     if format_clicked and sql_input.strip():
         formatted = _format_sql(sql_input)
         st.session_state.selected_sql = formatted
+        st.session_state["editor_sql_input"] = formatted
         st.rerun()
 
     if run_clicked and sql_input.strip():
@@ -877,7 +900,7 @@ def render_sql_editor_tab() -> None:
                 import pandas as pd
                 try:
                     df = pd.DataFrame(rows, columns=columns)
-                    st.dataframe(df, width="stretch")
+                    st.dataframe(df, use_container_width=True, hide_index=True)
 
                     # Download button
                     csv = df.to_csv(index=False)
@@ -1152,7 +1175,181 @@ def render_graph_tab() -> None:
                 hide_index=True,
             )
     elif not join_paths:
-        st.info("No JOIN_PATH edges found. The graph may not have pre-computed join routes yet.")
+        fk_edges = graph.get_all_edges("HAS_FOREIGN_KEY")
+        n_tables = len(tables)
+        n_fks = len(fk_edges)
+        if n_fks == 0:
+            st.warning(
+                f"No foreign key constraints found in the database ({n_tables} table(s) loaded). "
+                "JOIN_PATH edges cannot be computed without FK constraints. "
+                "The query pipeline will fall back to column-name similarity (SIMILAR_TO edges) "
+                "for join inference. Consider adding FK constraints to your Oracle schema."
+            )
+        else:
+            st.info(
+                f"Graph has {n_tables} table(s) and {n_fks} FK constraint(s), but no JOIN_PATH "
+                "edges have been computed yet. JOIN_PATHs are built during graph initialisation — "
+                "try reloading the app or re-running graph initialisation."
+            )
+
+
+# ---------------------------------------------------------------------------
+# Relationships tab
+# ---------------------------------------------------------------------------
+
+def render_relationships_tab() -> None:
+    """Explore FK constraints and join paths between tables."""
+    import pandas as pd
+    from knowledge_graph.traversal import find_join_path, get_columns_for_table
+
+    graph = st.session_state.graph
+    if graph is None:
+        st.info("The knowledge graph is not yet initialised. Submit a chat query first to load it.")
+        return
+
+    tables = graph.get_all_nodes("Table")
+    fk_edges = graph.get_all_edges("HAS_FOREIGN_KEY")
+    join_paths = graph.get_all_edges("JOIN_PATH")
+
+    # ── Top metrics ───────────────────────────────────────────────────────────
+    m1, m2, m3 = st.columns(3)
+    seen_jp: set = set()
+    direct_jp = 0
+    for e in join_paths:
+        if e.get("weight", 1) == 1:
+            key = frozenset([e.get("_from"), e.get("_to")])
+            if key not in seen_jp:
+                seen_jp.add(key)
+                direct_jp += 1
+    m1.metric("Tables", len(tables))
+    m2.metric("FK Constraints", len(fk_edges))
+    m3.metric("Direct Join Paths", direct_jp)
+
+    if not fk_edges and not join_paths:
+        st.warning(
+            "No FK constraints or JOIN_PATH edges found. "
+            "The graph cannot infer table relationships without foreign key metadata. "
+            "Check that FK constraints are defined in the database (ALL_CONSTRAINTS, type='R')."
+        )
+
+    st.divider()
+
+    # ── Section 1: FK Constraint table ───────────────────────────────────────
+    with st.expander(f"Foreign Key Constraints ({len(fk_edges)})", expanded=bool(fk_edges)):
+        if not fk_edges:
+            st.info("No FK constraints found in the knowledge graph.")
+        else:
+            rows = []
+            for e in sorted(fk_edges, key=lambda x: x.get("_from", "")):
+                src = e.get("_from", "")   # SCHEMA.TABLE.COL
+                tgt = e.get("_to", "")
+                src_table, src_col = (src.rsplit(".", 1) + [""])[:2] if "." in src else (src, "")
+                tgt_table, tgt_col = (tgt.rsplit(".", 1) + [""])[:2] if "." in tgt else (tgt, "")
+                rows.append({
+                    "From Table": src_table,
+                    "From Column": src_col,
+                    "→ To Table": tgt_table,
+                    "→ To Column": tgt_col,
+                    "Constraint": e.get("constraint_name", ""),
+                    "On Delete": e.get("on_delete_action", "NO ACTION"),
+                })
+            st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+
+    # ── Section 2: Join Path Explorer ────────────────────────────────────────
+    st.markdown("#### Join Path Explorer")
+    st.caption("Select two tables to see the join path and suggested ON clauses.")
+
+    table_fqns = sorted([t.get("fqn", "") for t in tables if t.get("fqn")])
+    if len(table_fqns) < 2:
+        st.info("At least two tables are required for the join path explorer.")
+    else:
+        c1, c2 = st.columns(2)
+        t1 = c1.selectbox("Table A", table_fqns, key="rel_t1")
+        remaining = [f for f in table_fqns if f != t1]
+        t2 = c2.selectbox("Table B", remaining, key="rel_t2")
+
+        if t1 and t2:
+            path = find_join_path(graph, t1, t2, max_hops=6)
+            if path is None:
+                st.warning(
+                    f"No join path found between **{t1.split('.')[-1]}** and "
+                    f"**{t2.split('.')[-1]}** within 6 hops. "
+                    "The tables may be unrelated or FK metadata is missing."
+                )
+            else:
+                if path.get("source") == "precomputed":
+                    join_cols = path.get("join_columns", [])
+                    hops = path.get("weight", len(join_cols))
+                    st.success(f"Join path found — {hops} hop(s), precomputed from FK graph")
+                    if join_cols:
+                        jrows = []
+                        for jc in join_cols:
+                            src = jc.get("src", "")
+                            tgt = jc.get("tgt", "")
+                            src_tbl = src.rsplit(".", 1)[0] if "." in src else src
+                            src_col_ = src.rsplit(".", 1)[-1] if "." in src else src
+                            tgt_tbl = tgt.rsplit(".", 1)[0] if "." in tgt else tgt
+                            tgt_col_ = tgt.rsplit(".", 1)[-1] if "." in tgt else tgt
+                            jrows.append({
+                                "Left Table": src_tbl.split(".")[-1],
+                                "Left Column": src_col_,
+                                "Right Table": tgt_tbl.split(".")[-1],
+                                "Right Column": tgt_col_,
+                                "Suggested JOIN": (
+                                    f"JOIN {tgt_tbl} ON {src_tbl.split('.')[-1]}.{src_col_}"
+                                    f" = {tgt_tbl.split('.')[-1]}.{tgt_col_}"
+                                ),
+                                "Constraint": jc.get("constraint", ""),
+                            })
+                        st.dataframe(pd.DataFrame(jrows), use_container_width=True, hide_index=True)
+                else:
+                    path_nodes = path.get("path_nodes", [])
+                    path_edges = path.get("path_edges", [])
+                    hops = path.get("hops", len(path_nodes) - 1)
+                    st.info(
+                        f"Join path found via live traversal — {hops} hop(s): "
+                        + " → ".join(n.split(".")[-1] for n in path_nodes)
+                    )
+                    if path_edges:
+                        jrows = []
+                        for pe in path_edges:
+                            src = pe.get("src_col_fqn", pe.get("src", ""))
+                            tgt = pe.get("tgt_col_fqn", pe.get("tgt", ""))
+                            jrows.append({
+                                "Left Column": src.split(".")[-1] if "." in src else src,
+                                "Left Table": src.rsplit(".", 1)[0].split(".")[-1] if "." in src else "",
+                                "Right Column": tgt.split(".")[-1] if "." in tgt else tgt,
+                                "Right Table": tgt.rsplit(".", 1)[0].split(".")[-1] if "." in tgt else "",
+                                "Constraint": pe.get("constraint_name", pe.get("constraint", "")),
+                            })
+                        st.dataframe(pd.DataFrame(jrows), use_container_width=True, hide_index=True)
+
+    # ── Section 3: Column Browser ─────────────────────────────────────────────
+    st.divider()
+    st.markdown("#### Column Browser")
+    st.caption("Inspect all columns, types, and key flags for any table.")
+
+    if table_fqns:
+        selected_tbl = st.selectbox("Select table", table_fqns, key="rel_col_browser")
+        if selected_tbl:
+            cols = get_columns_for_table(graph, selected_tbl)
+            if cols:
+                col_rows = []
+                for c in cols:
+                    flags = []
+                    if c.get("is_pk"): flags.append("PK")
+                    if c.get("is_fk"): flags.append("FK")
+                    if c.get("is_indexed"): flags.append("IDX")
+                    col_rows.append({
+                        "Column": c.get("name", ""),
+                        "Data Type": c.get("data_type", ""),
+                        "Nullable": "Yes" if c.get("nullable") == "Y" else "No",
+                        "Flags": "  ".join(f"[{f}]" for f in flags),
+                        "Comments": (c.get("comments") or "").strip(),
+                    })
+                st.dataframe(pd.DataFrame(col_rows), use_container_width=True, hide_index=True)
+            else:
+                st.warning(f"No columns found for {selected_tbl}.")
 
 
 # ---------------------------------------------------------------------------
@@ -1182,6 +1379,29 @@ def main() -> None:
         except Exception as exc:
             st.warning(f"Pipeline not fully initialized: {exc}")
 
+    # LLM graph enhancement — runs once after graph + pipeline are both ready.
+    # Uses the LLM to rank tables by business importance, infer missing FK
+    # relationships, and generate descriptions for undocumented tables.
+    _provider = getattr(config, "llm_provider", "").lower()
+    _has_creds = bool(getattr(config, "llm_api_key", "")) or (_provider == "vertex")
+    if (
+        st.session_state.graph is not None
+        and not st.session_state.graph_llm_enhanced
+        and _has_creds
+        and not getattr(config, "demo_mode", True)
+    ):
+        try:
+            from knowledge_graph.llm_enhancer import enhance_graph_with_llm
+            from agent.llm import get_llm
+            with st.spinner("Enhancing schema graph with LLM (ranking tables, inferring relationships)…"):
+                _enhance_llm = get_llm(config)
+                _enh_report = enhance_graph_with_llm(st.session_state.graph, _enhance_llm)
+            st.session_state.graph_llm_enhanced = True
+            logger.info("LLM graph enhancement done: %s", _enh_report)
+        except Exception as _enh_exc:
+            logger.warning("LLM graph enhancement skipped: %s", _enh_exc)
+            st.session_state.graph_llm_enhanced = True  # skip on next render too
+
     # Sidebar
     render_sidebar()
 
@@ -1193,7 +1413,9 @@ def main() -> None:
     )
 
     # Tabs
-    tab_chat, tab_editor, tab_graph = st.tabs(["Chat", "SQL Editor", "Knowledge Graph"])
+    tab_chat, tab_editor, tab_graph, tab_rel = st.tabs(
+        ["Chat", "SQL Editor", "Knowledge Graph", "Relationships"]
+    )
 
     with tab_chat:
         render_chat_tab()
@@ -1203,6 +1425,9 @@ def main() -> None:
 
     with tab_graph:
         render_graph_tab()
+
+    with tab_rel:
+        render_relationships_tab()
 
     # Footer
     st.markdown(

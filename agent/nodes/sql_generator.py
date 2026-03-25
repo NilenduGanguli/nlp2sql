@@ -20,7 +20,7 @@ from agent.state import AgentState
 
 logger = logging.getLogger(__name__)
 
-_SYSTEM_PROMPT = """You are an expert Oracle SQL developer specializing in KYC (Know Your Customer) compliance databases.
+_SYSTEM_PROMPT = """You are an expert Oracle SQL developer. You write SELECT-only Oracle SQL queries based on the schema DDL provided in each question.
 
 ORACLE SQL RULES — follow these strictly:
 1. Use Oracle-specific syntax: NVL() not ISNULL(), FETCH FIRST N ROWS ONLY not LIMIT, TO_DATE/TO_CHAR for dates
@@ -37,15 +37,18 @@ ORACLE SQL RULES — follow these strictly:
 12. For "last month": TRUNC(SYSDATE, 'MM') - INTERVAL '1' MONTH and TRUNC(SYSDATE, 'MM')
 13. For "last quarter": TRUNC(SYSDATE, 'Q') - INTERVAL '3' MONTH and TRUNC(SYSDATE, 'Q')
 14. For "last year": TRUNC(SYSDATE, 'YYYY') - INTERVAL '1' YEAR and TRUNC(SYSDATE, 'YYYY')
-15. Schema prefix all tables as KYC.TABLE_NAME
+15. Use the EXACT fully-qualified table names (SCHEMA.TABLE_NAME) as they appear in the DDL context provided. Do not invent or assume schema names — read them from the "-- TABLE: SCHEMA.TABLE" headers in the DDL.
+16. When the question spans multiple tables, use all the FK and JOIN PATH hints in the DDL to determine the correct join columns.
 
 OUTPUT FORMAT — you MUST use exactly these code fences:
-First, briefly reason through: which tables, which joins, which conditions, which aggregations.
+First, briefly reason through: which tables are needed, which joins to use (refer to FK hints), which conditions, which aggregations.
 Then:
 
 ```sql
 SELECT ...
-FROM KYC.TABLE ...
+FROM SCHEMA.TABLE_NAME alias
+JOIN SCHEMA.OTHER_TABLE alias2 ON alias.FK_COL = alias2.PK_COL
+...
 ```
 
 ```explanation
@@ -145,10 +148,7 @@ def make_sql_generator(llm) -> Callable[[AgentState], AgentState]:
                 sql_explanation = exp_match.group(1).strip()
             else:
                 # Use everything before the sql block as reasoning, or a default
-                sql_explanation = (
-                    "This query retrieves data from the KYC database "
-                    "based on your question."
-                )
+                sql_explanation = "This query retrieves data based on your question."
 
             logger.info(
                 "SQL generated (%d chars), explanation=%d chars",
@@ -173,8 +173,29 @@ def make_sql_generator(llm) -> Callable[[AgentState], AgentState]:
 
 
 def _build_fallback_sql(state: AgentState) -> str:
-    """Build a minimal valid Oracle SQL when the LLM fails."""
+    """
+    Build a minimal valid Oracle SQL when the LLM fails.
+
+    Extracts the fully-qualified table name from the DDL context (preferable)
+    so we use the correct schema prefix, not a hardcoded one.
+    """
     entities = state.get("entities", {})
-    tables = entities.get("tables", ["CUSTOMERS"])
-    table = tables[0] if tables else "CUSTOMERS"
-    return f"SELECT * FROM KYC.{table} FETCH FIRST 100 ROWS ONLY"
+    schema_context = state.get("schema_context", "")
+    tables = entities.get("tables", [])
+    hint_name = (tables[0] if tables else "").upper()
+
+    # Try to match FQN from DDL header lines: "-- TABLE: SCHEMA.TABLE_NAME"
+    if schema_context:
+        for line in schema_context.splitlines():
+            m = re.match(r"--\s*TABLE:\s*(\w+\.\w+)", line.strip(), re.IGNORECASE)
+            if m:
+                fqn = m.group(1)
+                # Prefer a FQN whose table portion matches the extracted entity hint
+                if not hint_name or hint_name in fqn.upper():
+                    return f"SELECT * FROM {fqn} FETCH FIRST 100 ROWS ONLY"
+
+    # If we have a hint name but no context match, use it unqualified
+    if hint_name:
+        return f"SELECT * FROM {hint_name} FETCH FIRST 100 ROWS ONLY"
+
+    return "SELECT 'No table resolved' AS error FROM DUAL"

@@ -113,28 +113,32 @@ class OracleMetadataExtractor:
         """Run the full extraction pipeline and return an OracleMetadata object."""
         logger.info("Connecting to Oracle DSN=%s USER=%s", self.config.dsn, self.config.user)
         if self.config.thick_mode and oracledb.is_thin_mode():
-            oracledb.init_oracle_client(lib_dir=self.config.oracle_lib_dir or None)
-            logger.info("oracledb thick mode enabled")
+            try:
+                oracledb.init_oracle_client(lib_dir=self.config.oracle_lib_dir or None)
+                logger.info("oracledb thick mode enabled")
+            except Exception as exc:
+                logger.warning(
+                    "Cannot enable thick mode (thin mode already active — "
+                    "another connection was made first). Falling back to thin mode. %s", exc
+                )
         conn = oracledb.connect(
             user=self.config.user,
             password=self.config.password,
             dsn=self.config.dsn,
         )
         # In thick mode (OCI), LONG columns (ALL_VIEWS.text) default to a
-        # 32 767-byte C buffer.  Any view definition longer than that causes OCI
+        # 32 767-byte C buffer. Any view definition longer than that causes OCI
         # to write past the buffer boundary → SIGSEGV signal 11.
-        # Setting a connection-level output-type handler increases that buffer to
-        # 1 MB and also applies in thin mode (harmlessly: Python already returns
-        # the full string).  OCI truncates cleanly at the declared size rather
-        # than overflowing, so there is no crash even for very large views.
+        # Setting a connection-level output-type handler increases that buffer.
+        # IMPORTANT: cursor.var(typ, size) defaults arraysize=1. In thin mode
+        # oracledb requires arraysize >= cursor.arraysize (100 by default) or it
+        # raises DPY-2016 on fetch. Must pass cursor.arraysize explicitly.
         _LONG_BUFFER = 1024 * 1024  # 1 MB — covers every realistic view definition
         _db_type_long = getattr(oracledb, "DB_TYPE_LONG", None)
 
         def _long_output_handler(cursor, name, default_type, size, precision, scale):
             if _db_type_long is not None and default_type == _db_type_long:
-                # arraysize=1 here limits OCI's prefetch array to 1 slot so total
-                # LONG buffer is exactly _LONG_BUFFER bytes, not cursor.arraysize × that.
-                return cursor.var(_db_type_long, _LONG_BUFFER, 1)
+                return cursor.var(_db_type_long, _LONG_BUFFER, cursor.arraysize)
 
         conn.outputtypehandler = _long_output_handler
         try:
@@ -146,7 +150,10 @@ class OracleMetadataExtractor:
         """Verify that the Oracle connection can be established."""
         try:
             if self.config.thick_mode and oracledb.is_thin_mode():
-                oracledb.init_oracle_client(lib_dir=self.config.oracle_lib_dir or None)
+                try:
+                    oracledb.init_oracle_client(lib_dir=self.config.oracle_lib_dir or None)
+                except Exception:
+                    pass  # fall back to thin mode silently
             conn = oracledb.connect(
                 user=self.config.user,
                 password=self.config.password,
@@ -402,7 +409,6 @@ class OracleMetadataExtractor:
                AND d.position = b.position
             WHERE {schema_clause}
               AND a.constraint_type = 'R'
-              AND a.status = 'ENABLED'
             ORDER BY a.owner, a.table_name, a.constraint_name, b.position
         """
         fks: List[HasForeignKeyRel] = []

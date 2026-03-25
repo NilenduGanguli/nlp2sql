@@ -199,20 +199,84 @@ def build_pipeline(graph, config, llm=None):
         try:
             from agent.nodes import intent_classifier, entity_extractor, sql_generator
             intent_fn = intent_classifier.make_intent_classifier(llm)
-            entity_fn = entity_extractor.make_entity_extractor(llm)
+            entity_fn = entity_extractor.make_entity_extractor(llm, graph=graph)
             gen_fn = sql_generator.make_sql_generator(llm)
         except Exception as exc:
             logger.warning("LLM node setup failed: %s", exc)
             intent_fn = entity_fn = gen_fn = None
 
-    intent_node   = intent_fn   if intent_fn   else _default_intent
-    entity_node   = entity_fn   if entity_fn   else _default_entities
-    schema_node   = context_builder.make_context_builder(graph)
-    gen_node      = gen_fn      if gen_fn      else _no_llm_sql_generator
-    valid_node    = sql_validator.make_sql_validator()
-    opt_node      = query_optimizer.make_query_optimizer()
-    exec_node     = query_executor.make_query_executor(config)
-    format_node   = result_formatter.make_result_formatter()
+    # Build graph-aware no-LLM fallback nodes.
+    # These close over `graph` so they search actual table names rather than
+    # relying on a hardcoded KYC fixture.
+    def _graph_default_entities(state: Dict[str, Any]) -> Dict[str, Any]:
+        """Graph-aware entity fallback: keyword-match against real table names."""
+        from agent.nodes.entity_extractor import _fallback_extract, _build_schema_summary
+        _, all_table_names = _build_schema_summary(graph)
+        entities = _fallback_extract(state.get("user_input", ""), all_table_names)
+        return {**state, "entities": entities, "step": "entities_extracted"}
+
+    def _graph_fallback_sql(state: Dict[str, Any]) -> Dict[str, Any]:
+        """Graph-aware SQL fallback: extracts FQN from schema_context DDL."""
+        import re as _re
+        entities = state.get("entities", {})
+        schema_context = state.get("schema_context", "")
+        tables = entities.get("tables", [])
+        hint_name = (tables[0] if tables else "").upper()
+        conditions = entities.get("conditions", [])
+        aggregations = entities.get("aggregations", [])
+
+        # Derive FQN from DDL header: "-- TABLE: SCHEMA.TABLE_NAME"
+        fqn: str = ""
+        if schema_context:
+            for line in schema_context.splitlines():
+                m = _re.match(r"--\s*TABLE:\s*(\w+\.\w+)", line.strip(), _re.IGNORECASE)
+                if m:
+                    candidate = m.group(1)
+                    if not hint_name or hint_name in candidate.upper():
+                        fqn = candidate
+                        break
+            if not fqn:
+                # Fall back to first DDL header regardless of hint
+                m2 = _re.search(r"--\s*TABLE:\s*(\w+\.\w+)", schema_context, _re.IGNORECASE)
+                if m2:
+                    fqn = m2.group(1)
+
+        if not fqn:
+            fqn = hint_name or "UNKNOWN_TABLE"
+
+        table_alias = "t"
+        if "COUNT" in aggregations:
+            sql = f"SELECT COUNT(*) AS TOTAL_COUNT FROM {fqn} {table_alias}"
+            if conditions:
+                sql += " WHERE " + " AND ".join(conditions)
+            explanation = f"Counts records in {fqn}"
+        else:
+            sql = f"SELECT {table_alias}.* FROM {fqn} {table_alias}"
+            if conditions:
+                sql += " WHERE " + " AND ".join(
+                    f"{table_alias}.{c}" if "." not in c else c for c in conditions
+                )
+            sql += " FETCH FIRST 100 ROWS ONLY"
+            explanation = f"Retrieves records from {fqn}"
+            if conditions:
+                explanation += f" matching: {', '.join(conditions)}"
+
+        return {
+            **state,
+            "generated_sql":    sql,
+            "sql_explanation":  explanation,
+            "validation_passed": True,
+            "step": "sql_generated",
+        }
+
+    intent_node = intent_fn   if intent_fn   else _default_intent
+    entity_node = entity_fn   if entity_fn   else _graph_default_entities
+    schema_node = context_builder.make_context_builder(graph)
+    gen_node    = gen_fn      if gen_fn      else _graph_fallback_sql
+    valid_node  = sql_validator.make_sql_validator()
+    opt_node    = query_optimizer.make_query_optimizer()
+    exec_node   = query_executor.make_query_executor(config)
+    format_node = result_formatter.make_result_formatter()
 
     if not _LANGGRAPH_AVAILABLE:
         # ------------------------------------------------------------------ #
