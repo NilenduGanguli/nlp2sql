@@ -72,7 +72,8 @@ def make_sql_generator(llm) -> Callable[[AgentState], AgentState]:
     """
 
     def generate_sql(state: AgentState) -> AgentState:
-        user_input = state.get("user_input", "")
+        # Prefer enriched query (domain-augmented by query_enricher node)
+        user_input = state.get("enriched_query") or state.get("user_input", "")
         schema_context = state.get("schema_context", "")
         conversation_history = state.get("conversation_history", [])
         validation_errors = state.get("validation_errors", [])
@@ -172,6 +173,29 @@ def make_sql_generator(llm) -> Callable[[AgentState], AgentState]:
     return generate_sql
 
 
+def _extract_fqn_from_context(schema_context: str, hint_name: str = "") -> str:
+    """
+    Extract the fully-qualified table name from DDL context headers.
+
+    Scans for ``-- TABLE: SCHEMA.TABLE_NAME`` lines in the DDL.
+    Prefers a match whose table portion contains ``hint_name``;
+    falls back to the first header found if no hint match is found.
+
+    Returns an empty string when nothing is found.
+    """
+    hint_upper = hint_name.upper()
+    first_fqn = ""
+    for line in schema_context.splitlines():
+        m = re.match(r"--\s*TABLE:\s*(\w+\.\w+)", line.strip(), re.IGNORECASE)
+        if m:
+            candidate = m.group(1)
+            if not first_fqn:
+                first_fqn = candidate
+            if not hint_upper or hint_upper in candidate.upper():
+                return candidate
+    return first_fqn  # fallback: first header found regardless of hint
+
+
 def _build_fallback_sql(state: AgentState) -> str:
     """
     Build a minimal valid Oracle SQL when the LLM fails.
@@ -184,17 +208,10 @@ def _build_fallback_sql(state: AgentState) -> str:
     tables = entities.get("tables", [])
     hint_name = (tables[0] if tables else "").upper()
 
-    # Try to match FQN from DDL header lines: "-- TABLE: SCHEMA.TABLE_NAME"
-    if schema_context:
-        for line in schema_context.splitlines():
-            m = re.match(r"--\s*TABLE:\s*(\w+\.\w+)", line.strip(), re.IGNORECASE)
-            if m:
-                fqn = m.group(1)
-                # Prefer a FQN whose table portion matches the extracted entity hint
-                if not hint_name or hint_name in fqn.upper():
-                    return f"SELECT * FROM {fqn} FETCH FIRST 100 ROWS ONLY"
+    fqn = _extract_fqn_from_context(schema_context, hint_name)
+    if fqn:
+        return f"SELECT * FROM {fqn} FETCH FIRST 100 ROWS ONLY"
 
-    # If we have a hint name but no context match, use it unqualified
     if hint_name:
         return f"SELECT * FROM {hint_name} FETCH FIRST 100 ROWS ONLY"
 

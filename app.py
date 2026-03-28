@@ -213,185 +213,55 @@ def init_session_state() -> None:
 # Knowledge graph builder (cached)
 # ---------------------------------------------------------------------------
 
-@st.cache_resource(show_spinner="Building knowledge graph...")
-def get_knowledge_graph(_config_hash: str):
-    """Build and cache the KnowledgeGraph.
-
-    When DEMO_MODE=false the graph is built from live Oracle metadata via
-    initialize_graph().  Falls back to the hardcoded demo schema on error or
-    when DEMO_MODE=true.
+class _GraphBundle:
     """
-    from knowledge_graph.graph_builder import GraphBuilder
-    from knowledge_graph.glossary_loader import InferredGlossaryBuilder
-    from knowledge_graph.models import (
-        ColumnNode,
-        HasForeignKeyRel,
-        HasPrimaryKeyRel,
-        IndexNode,
-        SchemaNode,
-        TableNode,
-    )
-    from knowledge_graph.oracle_extractor import OracleMetadata
+    Mutable container for the KnowledgeGraph and its LLM-enhancement state.
+
+    Returned by ``get_knowledge_graph()`` and cached by ``@st.cache_resource``,
+    which means **all Streamlit sessions share the exact same object**.  Using a
+    mutable class (instead of an immutable tuple) lets the LLM-enhancement block
+    set ``bundle.llm_enhanced = True`` once and have every subsequent session see
+    the updated value — preventing repeated, expensive LLM calls on each new tab.
+    """
+    __slots__ = ("graph", "llm_enhanced")
+
+    def __init__(self, graph, llm_enhanced: bool = False) -> None:
+        self.graph = graph
+        self.llm_enhanced = llm_enhanced
+
+
+@st.cache_resource(show_spinner="Building knowledge graph...")
+def get_knowledge_graph(_config_hash: str) -> "_GraphBundle":
+    """Build and cache the KnowledgeGraph from live Oracle metadata.
+
+    Load order:
+      1. Disk cache (``GRAPH_CACHE_PATH`` / ``~/.cache/knowledgeql``)
+      2. Live Oracle build via ``initialize_graph()``
+    """
+    from knowledge_graph.graph_cache import get_cache_path, load_graph, save_graph
+    from knowledge_graph.init_graph import initialize_graph
     from app_config import AppConfig
 
     config = AppConfig()
 
-    # ── Live Oracle graph ─────────────────────────────────────────────────────
-    if not config.demo_mode:
-        try:
-            from knowledge_graph.init_graph import initialize_graph
-            graph, report = initialize_graph(config.graph)
-            if report.get("success"):
-                return graph
-            st.warning(
-                "Oracle graph initialisation had issues — falling back to demo schema. "
-                "Check the app logs for details."
-            )
-        except Exception as _exc:
-            st.warning(
-                f"Could not build graph from Oracle ({_exc}) — using demo schema."
-            )
+    ttl_hours = float(os.getenv("GRAPH_CACHE_TTL_HOURS", "0"))
+    cache_path = get_cache_path(config)
 
-    # ── Demo / fallback: hardcoded static schema ──────────────────────────────
-    meta = OracleMetadata()
-    meta.schemas = [SchemaNode(name="KYC")]
+    # 1. Try loading from disk cache
+    cached = load_graph(cache_path, max_age_hours=ttl_hours)
+    if cached is not None:
+        graph, llm_enhanced = cached
+        return _GraphBundle(graph, llm_enhanced)
 
-    S = "KYC"
+    # 2. Cache miss — build from Oracle
+    graph, report = initialize_graph(config.graph)
+    if report.get("success"):
+        save_graph(graph, cache_path, llm_enhanced=False)
+        return _GraphBundle(graph, False)
 
-    meta.tables = [
-        TableNode(S, "CUSTOMERS",         row_count=50000,   comments="Core customer entity for KYC compliance"),
-        TableNode(S, "ACCOUNTS",          row_count=120000,  comments="Customer accounts"),
-        TableNode(S, "TRANSACTIONS",      row_count=5000000, comments="Financial transactions"),
-        TableNode(S, "KYC_REVIEWS",       row_count=200000,  comments="Periodic KYC review records"),
-        TableNode(S, "RISK_ASSESSMENTS",  row_count=75000,   comments="Customer risk scores"),
-        TableNode(S, "BENEFICIAL_OWNERS", row_count=30000,   comments="Ultimate beneficial owner records"),
-        TableNode(S, "EMPLOYEES",         row_count=1500,    comments="Employee directory"),
-        TableNode(S, "PEP_STATUS",        row_count=8000,    comments="Politically exposed person flags"),
-    ]
-
-    def col(table: str, name: str, dtype: str, **kw) -> ColumnNode:
-        return ColumnNode(S, table, name, dtype, **kw)
-
-    meta.columns = [
-        # CUSTOMERS
-        col("CUSTOMERS", "CUSTOMER_ID",        "NUMBER",   precision=10, nullable="N", column_id=1,  is_pk=True,  is_indexed=True,  comments="Unique customer identifier"),
-        col("CUSTOMERS", "FIRST_NAME",         "VARCHAR2", data_length=100, nullable="N", column_id=2, comments="Customer first name"),
-        col("CUSTOMERS", "LAST_NAME",          "VARCHAR2", data_length=100, nullable="N", column_id=3, comments="Customer last name"),
-        col("CUSTOMERS", "DATE_OF_BIRTH",      "DATE",     nullable="Y",  column_id=4,  comments="Date of birth"),
-        col("CUSTOMERS", "NATIONALITY",        "VARCHAR2", data_length=3,   nullable="Y", column_id=5,  comments="ISO 3166-1 alpha-3 country code"),
-        col("CUSTOMERS", "SSN",                "VARCHAR2", data_length=20,  nullable="Y", column_id=6,  comments="Social security number (masked)"),
-        col("CUSTOMERS", "RISK_RATING",        "VARCHAR2", data_length=10,  nullable="N", column_id=8,  is_indexed=True, comments="Risk level: LOW | MEDIUM | HIGH | VERY_HIGH", sample_values=["LOW","MEDIUM","HIGH","VERY_HIGH"], num_distinct=4),
-        col("CUSTOMERS", "ACCOUNT_MANAGER_ID", "NUMBER",   precision=10, nullable="Y",  column_id=9,  is_fk=True,  is_indexed=True, comments="FK to EMPLOYEES"),
-        col("CUSTOMERS", "CREATED_DATE",       "DATE",     nullable="N",  column_id=10, comments="Onboarding date"),
-
-        # ACCOUNTS
-        col("ACCOUNTS", "ACCOUNT_ID",    "NUMBER",   precision=12, nullable="N", column_id=1, is_pk=True, is_indexed=True),
-        col("ACCOUNTS", "CUSTOMER_ID",   "NUMBER",   precision=10, nullable="N", column_id=2, is_fk=True, is_indexed=True, comments="FK to CUSTOMERS"),
-        col("ACCOUNTS", "ACCOUNT_TYPE",  "VARCHAR2", data_length=20,  nullable="N", column_id=3, comments="SAVINGS | CURRENT | INVESTMENT", sample_values=["SAVINGS","CURRENT","INVESTMENT"], num_distinct=3),
-        col("ACCOUNTS", "BALANCE",       "NUMBER",   precision=18, scale=2, nullable="N", column_id=4, comments="Current balance"),
-        col("ACCOUNTS", "CURRENCY",      "VARCHAR2", data_length=3,   nullable="N", column_id=5, comments="ISO 4217 currency code"),
-        col("ACCOUNTS", "STATUS",        "VARCHAR2", data_length=20,  nullable="N", column_id=6, comments="ACTIVE | DORMANT | CLOSED | FROZEN", sample_values=["ACTIVE","DORMANT","CLOSED","FROZEN"], num_distinct=4),
-        col("ACCOUNTS", "OPENED_DATE",   "DATE",     nullable="N", column_id=7, comments="Account opening date"),
-
-        # TRANSACTIONS
-        col("TRANSACTIONS", "TRANSACTION_ID",   "NUMBER",   precision=15, nullable="N", column_id=1, is_pk=True, is_indexed=True),
-        col("TRANSACTIONS", "ACCOUNT_ID",       "NUMBER",   precision=12, nullable="N", column_id=2, is_fk=True, is_indexed=True, comments="FK to ACCOUNTS"),
-        col("TRANSACTIONS", "AMOUNT",           "NUMBER",   precision=18, scale=2, nullable="N", column_id=3, comments="Transaction amount"),
-        col("TRANSACTIONS", "CURRENCY",         "VARCHAR2", data_length=3,  nullable="N", column_id=4),
-        col("TRANSACTIONS", "TRANSACTION_DATE", "DATE",     nullable="N", column_id=5, is_indexed=True),
-        col("TRANSACTIONS", "TRANSACTION_TYPE", "VARCHAR2", data_length=30, nullable="N", column_id=7, comments="DEBIT | CREDIT | WIRE | INTERNAL", sample_values=["DEBIT","CREDIT","WIRE","INTERNAL"], num_distinct=4),
-        col("TRANSACTIONS", "IS_FLAGGED",       "CHAR",     data_length=1,  nullable="N", column_id=8, comments="Y = flagged for investigation"),
-
-        # KYC_REVIEWS
-        col("KYC_REVIEWS", "REVIEW_ID",       "NUMBER", precision=12, nullable="N", column_id=1, is_pk=True,  is_indexed=True),
-        col("KYC_REVIEWS", "CUSTOMER_ID",     "NUMBER", precision=10, nullable="N", column_id=2, is_fk=True,  is_indexed=True, comments="FK to CUSTOMERS"),
-        col("KYC_REVIEWS", "REVIEW_DATE",     "DATE",   nullable="N", column_id=3, is_indexed=True),
-        col("KYC_REVIEWS", "REVIEWER_ID",     "NUMBER", precision=10, nullable="N", column_id=4, is_fk=True,  comments="FK to EMPLOYEES"),
-        col("KYC_REVIEWS", "STATUS",          "VARCHAR2", data_length=20, nullable="N", column_id=5, comments="PENDING | COMPLETED | FAILED | ESCALATED"),
-        col("KYC_REVIEWS", "NEXT_REVIEW_DATE","DATE",   nullable="Y", column_id=6),
-
-        # RISK_ASSESSMENTS
-        col("RISK_ASSESSMENTS", "ASSESSMENT_ID", "NUMBER",   precision=12, nullable="N", column_id=1, is_pk=True),
-        col("RISK_ASSESSMENTS", "CUSTOMER_ID",   "NUMBER",   precision=10, nullable="N", column_id=2, is_fk=True, is_indexed=True, comments="FK to CUSTOMERS"),
-        col("RISK_ASSESSMENTS", "RISK_SCORE",    "NUMBER",   precision=5, scale=2, nullable="N", column_id=3),
-        col("RISK_ASSESSMENTS", "RISK_LEVEL",    "VARCHAR2", data_length=10, nullable="N", column_id=4, comments="LOW | MEDIUM | HIGH | VERY_HIGH"),
-        col("RISK_ASSESSMENTS", "ASSESSED_DATE", "DATE",     nullable="N", column_id=5),
-        col("RISK_ASSESSMENTS", "ASSESSED_BY",   "NUMBER",   precision=10, nullable="Y", column_id=6, is_fk=True, comments="FK to EMPLOYEES"),
-
-        # BENEFICIAL_OWNERS
-        col("BENEFICIAL_OWNERS", "OWNER_ID",      "NUMBER",   precision=12, nullable="N", column_id=1, is_pk=True),
-        col("BENEFICIAL_OWNERS", "CUSTOMER_ID",   "NUMBER",   precision=10, nullable="N", column_id=2, is_fk=True, is_indexed=True),
-        col("BENEFICIAL_OWNERS", "OWNER_NAME",    "VARCHAR2", data_length=200, nullable="N", column_id=3),
-        col("BENEFICIAL_OWNERS", "OWNERSHIP_PCT", "NUMBER",   precision=5, scale=2, nullable="N", column_id=4, comments="Ownership percentage"),
-        col("BENEFICIAL_OWNERS", "RELATIONSHIP",  "VARCHAR2", data_length=50, nullable="N", column_id=5),
-
-        # EMPLOYEES
-        col("EMPLOYEES", "EMPLOYEE_ID", "NUMBER",   precision=10, nullable="N", column_id=1, is_pk=True, is_indexed=True),
-        col("EMPLOYEES", "FIRST_NAME",  "VARCHAR2", data_length=100, nullable="N", column_id=2),
-        col("EMPLOYEES", "LAST_NAME",   "VARCHAR2", data_length=100, nullable="N", column_id=3),
-        col("EMPLOYEES", "DEPARTMENT",  "VARCHAR2", data_length=100, nullable="Y", column_id=4),
-        col("EMPLOYEES", "ROLE",        "VARCHAR2", data_length=100, nullable="Y", column_id=5),
-        col("EMPLOYEES", "EMAIL",       "VARCHAR2", data_length=200, nullable="Y", column_id=6),
-
-        # PEP_STATUS
-        col("PEP_STATUS", "PEP_ID",      "NUMBER",   precision=12, nullable="N", column_id=1, is_pk=True),
-        col("PEP_STATUS", "CUSTOMER_ID", "NUMBER",   precision=10, nullable="N", column_id=2, is_fk=True, is_indexed=True),
-        col("PEP_STATUS", "IS_PEP",      "CHAR",     data_length=1, nullable="N", column_id=3, comments="Y | N"),
-        col("PEP_STATUS", "PEP_TYPE",    "VARCHAR2", data_length=50, nullable="Y", column_id=4, comments="HEAD_OF_STATE | SENIOR_OFFICIAL | JUDGE | MILITARY"),
-        col("PEP_STATUS", "LISTED_DATE", "DATE",     nullable="Y", column_id=5),
-    ]
-
-    meta.foreign_keys = [
-        HasForeignKeyRel("KYC.ACCOUNTS.CUSTOMER_ID",         "KYC.CUSTOMERS.CUSTOMER_ID",  "FK_ACCOUNTS_CUSTOMER",  "NO ACTION"),
-        HasForeignKeyRel("KYC.TRANSACTIONS.ACCOUNT_ID",       "KYC.ACCOUNTS.ACCOUNT_ID",    "FK_TRANSACTIONS_ACCOUNT","NO ACTION"),
-        HasForeignKeyRel("KYC.KYC_REVIEWS.CUSTOMER_ID",       "KYC.CUSTOMERS.CUSTOMER_ID",  "FK_REVIEWS_CUSTOMER",   "NO ACTION"),
-        HasForeignKeyRel("KYC.KYC_REVIEWS.REVIEWER_ID",       "KYC.EMPLOYEES.EMPLOYEE_ID",  "FK_REVIEWS_REVIEWER",   "NO ACTION"),
-        HasForeignKeyRel("KYC.RISK_ASSESSMENTS.CUSTOMER_ID",  "KYC.CUSTOMERS.CUSTOMER_ID",  "FK_RISK_CUSTOMER",      "NO ACTION"),
-        HasForeignKeyRel("KYC.RISK_ASSESSMENTS.ASSESSED_BY",  "KYC.EMPLOYEES.EMPLOYEE_ID",  "FK_RISK_ASSESSOR",      "NO ACTION"),
-        HasForeignKeyRel("KYC.BENEFICIAL_OWNERS.CUSTOMER_ID", "KYC.CUSTOMERS.CUSTOMER_ID",  "FK_BENE_CUSTOMER",      "CASCADE"),
-        HasForeignKeyRel("KYC.CUSTOMERS.ACCOUNT_MANAGER_ID",  "KYC.EMPLOYEES.EMPLOYEE_ID",  "FK_CUST_MANAGER",       "NO ACTION"),
-        HasForeignKeyRel("KYC.PEP_STATUS.CUSTOMER_ID",        "KYC.CUSTOMERS.CUSTOMER_ID",  "FK_PEP_CUSTOMER",       "CASCADE"),
-    ]
-
-    meta.primary_keys = [
-        HasPrimaryKeyRel("KYC.CUSTOMERS",         "KYC.CUSTOMERS.CUSTOMER_ID",              "PK_CUSTOMERS"),
-        HasPrimaryKeyRel("KYC.ACCOUNTS",          "KYC.ACCOUNTS.ACCOUNT_ID",                "PK_ACCOUNTS"),
-        HasPrimaryKeyRel("KYC.TRANSACTIONS",      "KYC.TRANSACTIONS.TRANSACTION_ID",        "PK_TRANSACTIONS"),
-        HasPrimaryKeyRel("KYC.KYC_REVIEWS",       "KYC.KYC_REVIEWS.REVIEW_ID",              "PK_KYC_REVIEWS"),
-        HasPrimaryKeyRel("KYC.RISK_ASSESSMENTS",  "KYC.RISK_ASSESSMENTS.ASSESSMENT_ID",     "PK_RISK_ASSESSMENTS"),
-        HasPrimaryKeyRel("KYC.BENEFICIAL_OWNERS", "KYC.BENEFICIAL_OWNERS.OWNER_ID",         "PK_BENEFICIAL_OWNERS"),
-        HasPrimaryKeyRel("KYC.EMPLOYEES",         "KYC.EMPLOYEES.EMPLOYEE_ID",              "PK_EMPLOYEES"),
-        HasPrimaryKeyRel("KYC.PEP_STATUS",        "KYC.PEP_STATUS.PEP_ID",                 "PK_PEP_STATUS"),
-    ]
-
-    meta.indexes = [
-        IndexNode("PK_CUSTOMERS",   S, "CUSTOMERS",    "NORMAL", "UNIQUE",    "CUSTOMER_ID"),
-        IndexNode("IDX_CUST_RISK",  S, "CUSTOMERS",    "NORMAL", "NONUNIQUE", "RISK_RATING"),
-        IndexNode("PK_ACCOUNTS",    S, "ACCOUNTS",     "NORMAL", "UNIQUE",    "ACCOUNT_ID"),
-        IndexNode("IDX_ACCT_CUST",  S, "ACCOUNTS",     "NORMAL", "NONUNIQUE", "CUSTOMER_ID"),
-        IndexNode("PK_TXN",         S, "TRANSACTIONS", "NORMAL", "UNIQUE",    "TRANSACTION_ID"),
-        IndexNode("IDX_TXN_ACCT",   S, "TRANSACTIONS", "NORMAL", "NONUNIQUE", "ACCOUNT_ID"),
-        IndexNode("IDX_TXN_DATE",   S, "TRANSACTIONS", "NORMAL", "NONUNIQUE", "TRANSACTION_DATE"),
-        IndexNode("PK_KYC_REVIEWS", S, "KYC_REVIEWS",  "NORMAL", "UNIQUE",    "REVIEW_ID"),
-    ]
-
-    meta.views         = []
-    meta.constraints   = []
-    meta.procedures    = []
-    meta.synonyms      = []
-    meta.sequences     = []
-    meta.view_dependencies = {}
-    meta.sample_data   = {}
-
-    graph_cfg = config.graph
-    builder = GraphBuilder(graph_cfg)
-    builder.build(meta)
-
-    # Enrich with inferred business glossary
-    glossary = InferredGlossaryBuilder(builder.graph)
-    glossary.build(meta)
-
-    return builder.graph
+    raise RuntimeError(
+        "Knowledge graph initialisation failed — check Oracle connection and app logs."
+    )
 
 
 @st.cache_resource(show_spinner="Initializing pipeline...")
@@ -405,8 +275,7 @@ def get_pipeline(_config_hash: str, _api_key: str):
     if _api_key:
         config.llm_api_key = _api_key
 
-    graph = get_knowledge_graph(_config_hash)
-
+    graph = get_knowledge_graph(_config_hash).graph
     try:
         pipeline = build_pipeline(graph, config)
         return pipeline
@@ -442,11 +311,8 @@ def render_sidebar() -> None:
         # LLM status
         is_vertex = config.llm_provider.lower() == "vertex"
         has_key = bool(config.llm_api_key) or is_vertex  # Vertex uses ADC, no key needed
-        demo = config.demo_mode
         if has_key:
             llm_pill = f"<span class='status-pill pill-green'>{config.llm_provider.upper()} READY</span>"
-        elif demo:
-            llm_pill = "<span class='status-pill pill-orange'>DEMO MODE</span>"
         else:
             llm_pill = "<span class='status-pill pill-red'>NO API KEY</span>"
         st.markdown(f"**LLM** {llm_pill}", unsafe_allow_html=True)
@@ -455,8 +321,6 @@ def render_sidebar() -> None:
         oracle_connected = _check_oracle_connectivity(config)
         if oracle_connected:
             oracle_pill = "<span class='status-pill pill-green'>CONNECTED</span>"
-        elif demo:
-            oracle_pill = "<span class='status-pill pill-orange'>MOCK DATA</span>"
         else:
             oracle_pill = "<span class='status-pill pill-red'>DISCONNECTED</span>"
         st.markdown(f"**Oracle** {oracle_pill}", unsafe_allow_html=True)
@@ -498,22 +362,42 @@ def render_sidebar() -> None:
                 disabled=_is_vertex,
                 key="settings_api_key",
             )
-            demo_mode = st.toggle(
-                "Demo Mode (mock Oracle data)",
-                value=config.demo_mode,
-                key="settings_demo_mode",
-            )
-
             if st.button("Apply Settings", use_container_width=True):
                 config.llm_provider = provider
                 config.llm_model = model
                 config.llm_api_key = api_key
-                config.demo_mode = demo_mode
                 st.session_state.config = config
                 # Clear cached pipeline so it rebuilds with new settings
                 get_pipeline.clear()
                 st.session_state.pipeline = None
                 st.success("Settings applied.")
+                st.rerun()
+
+            # ── Graph cache status + force-refresh ────────────────────────────
+            from knowledge_graph.graph_cache import (
+                cache_info, get_cache_path, invalidate_cache
+            )
+            _cpath = get_cache_path(config)
+            _info  = cache_info(_cpath)
+            if _info:
+                _enh_icon = "✓" if _info.get("llm_enhanced") else "–"
+                _cv = _info.get("cache_version", "1")
+                st.caption(
+                    f"Cached graph v{_cv}: {_info['age_hours']}h old · "
+                    f"{_info['size_mb']} MB · LLM-enhanced: {_enh_icon}"
+                )
+            else:
+                st.caption("No graph cache on disk (will build from Oracle on next load).")
+
+            if st.button("Force Rebuild Graph", use_container_width=True):
+                invalidate_cache(_cpath)
+                get_knowledge_graph.clear()
+                get_pipeline.clear()
+                st.session_state.graph = None
+                st.session_state.pipeline = None
+                st.session_state.graph_initialized = False
+                st.session_state.graph_llm_enhanced = False
+                st.info("Graph cache cleared — rebuilding from Oracle on next load.")
                 st.rerun()
 
         # ------------------------------------------------------ Schema Explorer
@@ -560,7 +444,7 @@ def _check_oracle_connectivity(config) -> bool:
             return False
         # Very short timeout check
         if config.oracle.thick_mode and oracledb.is_thin_mode():
-            oracledb.init_oracle_client(lib_dir=config.oracle.oracle_lib_dir or None)
+            oracledb.init_oracle_client()
         conn = oracledb.connect(
             user=config.oracle.user,
             password=config.oracle.password,
@@ -616,16 +500,6 @@ def _render_schema_explorer(graph) -> None:
 def render_chat_tab() -> None:
     """Render the main chat interface."""
     config = st.session_state.config
-
-    # Demo mode banner
-    if config.demo_mode:
-        st.markdown(
-            "<div class='demo-banner'>"
-            "Demo mode is ON — SQL is generated but executed against synthetic mock data. "
-            "Set a real API key and disable Demo Mode in Settings to use live Oracle."
-            "</div>",
-            unsafe_allow_html=True,
-        )
 
     # Suggested query chips
     st.markdown("**Try a question:**")
@@ -762,9 +636,12 @@ def _process_query(user_input: str) -> None:
     config = st.session_state.config
 
     # Ensure graph and pipeline are initialized
-    config_hash = f"{config.llm_provider}:{config.llm_model}:{config.demo_mode}"
+    config_hash = f"{config.llm_provider}:{config.llm_model}"
     if st.session_state.graph is None:
-        st.session_state.graph = get_knowledge_graph(config_hash)
+        _bundle = get_knowledge_graph(config_hash)
+        st.session_state.graph = _bundle.graph
+        if _bundle.llm_enhanced:
+            st.session_state.graph_llm_enhanced = True
 
     if st.session_state.pipeline is None:
         st.session_state.pipeline = get_pipeline(config_hash, config.llm_api_key)
@@ -851,11 +728,14 @@ def render_sql_editor_tab() -> None:
     st.markdown("Write or paste Oracle SQL below and run it against the KYC database.")
 
     config = st.session_state.config
-    config_hash = f"{config.llm_provider}:{config.llm_model}:{config.demo_mode}"
+    config_hash = f"{config.llm_provider}:{config.llm_model}"
 
     # Initialize graph if needed
     if st.session_state.graph is None:
-        st.session_state.graph = get_knowledge_graph(config_hash)
+        _bundle = get_knowledge_graph(config_hash)
+        st.session_state.graph = _bundle.graph
+        if _bundle.llm_enhanced:
+            st.session_state.graph_llm_enhanced = True
 
     # SQL text area — pre-populate from chat if "Open in Editor" was clicked
     default_sql = st.session_state.selected_sql or _default_editor_sql()
@@ -927,29 +807,20 @@ def render_sql_editor_tab() -> None:
 
 
 def _run_editor_sql(sql: str, config) -> None:
-    """Execute SQL in the editor using the mock/oracle executor."""
-    from agent.nodes.query_executor import _mock_execute, _oracle_execute
+    """Execute SQL in the editor against Oracle."""
+    from agent.nodes.query_executor import _oracle_execute
 
     with st.spinner("Executing SQL..."):
         try:
-            if config.demo_mode:
-                result = _mock_execute(sql)
-            else:
-                try:
-                    result = _oracle_execute(sql, config)
-                except Exception as exc:
-                    st.warning(f"Oracle execution failed: {exc} — using mock data")
-                    result = _mock_execute(sql)
-
+            result = _oracle_execute(sql, config)
             total_rows = result.get("total_rows", 0)
             exec_ms = result.get("execution_time_ms", 0)
-            source = result.get("source", "mock")
+            source = result.get("source", "oracle")
             result["type"] = "query_result"
             result["summary"] = (
                 f"Returned {total_rows:,} row(s) in {exec_ms / 1000:.2f}s ({source})"
             )
             st.session_state.editor_result = result
-
         except Exception as exc:
             st.session_state.editor_result = {
                 "type": "error",
@@ -1001,31 +872,55 @@ def render_graph_tab() -> None:
         st.info("The knowledge graph is not yet initialised. Submit a chat query first to load it.")
         return
 
-    # ── Controls ──────────────────────────────────────────────────────────────
-    col_hdr, col_ctrl = st.columns([4, 1])
-    with col_hdr:
-        st.markdown("### Table Relationship Graph")
-        st.caption(
-            "Nodes = tables · Edges = foreign key relationships detected by the knowledge graph. "
-            "Hover a node for table details. Node size reflects the number of connections."
-        )
-    with col_ctrl:
-        show_all = st.toggle("Multi-hop paths", value=False, key="graph_show_all")
-
     # ── Pull data from the in-memory graph ────────────────────────────────────
-    tables = graph.get_all_nodes("Table")
-    join_paths = graph.get_all_edges("JOIN_PATH")
+    all_tables = graph.get_all_nodes("Table")
+    join_paths  = graph.get_all_edges("JOIN_PATH")
 
-    if not tables:
+    if not all_tables:
         st.warning("No tables found in the knowledge graph.")
         return
 
-    # Index by FQN — merge_node stores fqn as a property
-    table_meta: dict = {t["fqn"]: t for t in tables if t.get("fqn")}
-
-    if not table_meta:
+    # Index all tables by FQN (uppercase for stable lookups)
+    all_table_meta: dict = {t["fqn"]: t for t in all_tables if t.get("fqn")}
+    if not all_table_meta:
         st.warning("Table nodes do not carry FQN properties — cannot render graph.")
         return
+
+    # Sorted list of all FQNs for multiselect options
+    all_fqns_sorted = sorted(all_table_meta.keys())
+
+    # ── Header + filter controls ───────────────────────────────────────────────
+    st.markdown("### Table Relationship Graph")
+
+    col_filter, col_toggle = st.columns([5, 1])
+
+    with col_filter:
+        selected_fqns: list = st.multiselect(
+            "Filter tables (SCHEMA.TABLE_NAME) — leave empty to show all",
+            options=all_fqns_sorted,
+            default=[],
+            key="graph_table_filter",
+            placeholder="e.g. KYC.CUSTOMERS, KYC.ACCOUNTS …",
+        )
+
+    with col_toggle:
+        st.markdown("&nbsp;", unsafe_allow_html=True)  # vertical alignment spacer
+        show_all = st.toggle("Multi-hop paths", value=False, key="graph_show_all")
+
+    # Apply table filter
+    if selected_fqns:
+        selected_set = set(selected_fqns)
+        table_meta = {fqn: meta for fqn, meta in all_table_meta.items() if fqn in selected_set}
+        st.caption(
+            f"Showing {len(table_meta)} of {len(all_table_meta)} tables. "
+            "Only relationships between the selected tables are rendered."
+        )
+    else:
+        table_meta = all_table_meta
+        st.caption(
+            "Nodes = tables · Edges = foreign key relationships. "
+            "Hover a node for table details. Node size reflects the number of connections."
+        )
 
     # Filter: direct FK (weight=1) or all pre-computed paths
     filtered = [
@@ -1176,7 +1071,7 @@ def render_graph_tab() -> None:
             )
     elif not join_paths:
         fk_edges = graph.get_all_edges("HAS_FOREIGN_KEY")
-        n_tables = len(tables)
+        n_tables = len(all_tables)
         n_fks = len(fk_edges)
         if n_fks == 0:
             st.warning(
@@ -1362,13 +1257,16 @@ def main() -> None:
 
     # Initialize graph on first load (non-blocking — happens in background via cache)
     config = st.session_state.config
-    config_hash = f"{config.llm_provider}:{config.llm_model}:{config.demo_mode}"
+    config_hash = f"{config.llm_provider}:{config.llm_model}"
 
     # Pre-load graph if not yet loaded
     if st.session_state.graph is None:
         try:
-            st.session_state.graph = get_knowledge_graph(config_hash)
+            _bundle = get_knowledge_graph(config_hash)
+            st.session_state.graph = _bundle.graph
             st.session_state.graph_initialized = True
+            if _bundle.llm_enhanced:
+                st.session_state.graph_llm_enhanced = True
         except Exception as exc:
             st.error(f"Failed to initialize knowledge graph: {exc}")
 
@@ -1379,28 +1277,42 @@ def main() -> None:
         except Exception as exc:
             st.warning(f"Pipeline not fully initialized: {exc}")
 
-    # LLM graph enhancement — runs once after graph + pipeline are both ready.
-    # Uses the LLM to rank tables by business importance, infer missing FK
-    # relationships, and generate descriptions for undocumented tables.
+    # LLM graph enhancement — runs once per process after graph + pipeline are ready.
+    # Uses the LLM to rank tables by importance, infer missing FK relationships,
+    # and generate descriptions for undocumented tables.
+    #
+    # The guard uses the shared _GraphBundle.llm_enhanced flag (not just session
+    # state) so that if enhancement already ran in another session tab within this
+    # process it is not repeated.  After completion, bundle.llm_enhanced is mutated
+    # to True — all future sessions immediately see the up-to-date flag.
     _provider = getattr(config, "llm_provider", "").lower()
     _has_creds = bool(getattr(config, "llm_api_key", "")) or (_provider == "vertex")
+    _bundle_ref = get_knowledge_graph(config_hash)  # always a fast in-memory lookup
     if (
-        st.session_state.graph is not None
-        and not st.session_state.graph_llm_enhanced
+        _bundle_ref is not None
+        and not _bundle_ref.llm_enhanced          # shared across sessions
+        and not st.session_state.graph_llm_enhanced  # per-session safety net
         and _has_creds
-        and not getattr(config, "demo_mode", True)
     ):
         try:
             from knowledge_graph.llm_enhancer import enhance_graph_with_llm
+            from knowledge_graph.graph_cache import get_cache_path, save_graph
             from agent.llm import get_llm
             with st.spinner("Enhancing schema graph with LLM (ranking tables, inferring relationships)…"):
                 _enhance_llm = get_llm(config)
                 _enh_report = enhance_graph_with_llm(st.session_state.graph, _enhance_llm)
+            # Mutate the shared bundle first — all other sessions see this immediately.
+            _bundle_ref.llm_enhanced = True
             st.session_state.graph_llm_enhanced = True
             logger.info("LLM graph enhancement done: %s", _enh_report)
+            # Persist to disk so future process restarts skip enhancement too.
+            _cache_path = get_cache_path(config)
+            save_graph(st.session_state.graph, _cache_path, llm_enhanced=True)
         except Exception as _enh_exc:
             logger.warning("LLM graph enhancement skipped: %s", _enh_exc)
-            st.session_state.graph_llm_enhanced = True  # skip on next render too
+            # Mark as done in bundle and session to prevent retry loops.
+            _bundle_ref.llm_enhanced = True
+            st.session_state.graph_llm_enhanced = True
 
     # Sidebar
     render_sidebar()

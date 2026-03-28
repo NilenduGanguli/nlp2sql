@@ -23,6 +23,11 @@ from collections import defaultdict
 from typing import Any, Dict, Iterator, List, Optional, Tuple
 
 
+def _dict_of_lists() -> "defaultdict[str, List[Any]]":
+    """Module-level factory for defaultdict(list) — required for pickle compatibility."""
+    return defaultdict(list)
+
+
 class KnowledgeGraph:
     """
     An in-memory property graph with typed node labels and relationship types.
@@ -46,11 +51,11 @@ class KnowledgeGraph:
 
         # Fast lookup: rel_type -> from_id -> [edge_dict]
         self._out_idx: Dict[str, Dict[str, List[Dict[str, Any]]]] = (
-            defaultdict(lambda: defaultdict(list))
+            defaultdict(_dict_of_lists)
         )
         # Fast lookup: rel_type -> to_id -> [edge_dict]
         self._in_idx: Dict[str, Dict[str, List[Dict[str, Any]]]] = (
-            defaultdict(lambda: defaultdict(list))
+            defaultdict(_dict_of_lists)
         )
 
     # ------------------------------------------------------------------

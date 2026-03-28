@@ -52,9 +52,6 @@ try:
         max_sql_retries: int = Field(default=3)
         token_budget: int = Field(default=4000)
 
-        # --- Demo / live mode ---
-        demo_mode: bool = Field(default=True, validation_alias="DEMO_MODE")
-
         # --- Composed sub-configs (not settable via env directly) ---
         oracle: OracleConfig = Field(default_factory=OracleConfig)
         graph: GraphConfig = Field(default_factory=GraphConfig)
@@ -120,11 +117,5 @@ except ImportError:
             )
             self.max_sql_retries = int(kwargs.get("max_sql_retries", 3))
             self.token_budget = int(kwargs.get("token_budget", 4000))
-            self.demo_mode = bool(
-                kwargs.get(
-                    "demo_mode",
-                    os.getenv("DEMO_MODE", "true").lower() in ("true", "1", "yes"),
-                )
-            )
             self.oracle = kwargs.get("oracle", OracleConfig())
             self.graph = kwargs.get("graph", GraphConfig())

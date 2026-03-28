@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
@@ -32,112 +33,10 @@ def _default_intent(state: Dict[str, Any]) -> Dict[str, Any]:
     return {**state, "intent": "DATA_QUERY", "step": "intent_classified"}
 
 
-def _default_entities(state: Dict[str, Any]) -> Dict[str, Any]:
-    """Fallback entity extractor: simple keyword matching against KYC table names."""
-    text = state.get("user_input", "").upper()
-    kyc_tables = [
-        "CUSTOMERS", "ACCOUNTS", "TRANSACTIONS", "KYC_REVIEWS",
-        "RISK_ASSESSMENTS", "BENEFICIAL_OWNERS", "EMPLOYEES", "PEP_STATUS",
-    ]
-    found = [t for t in kyc_tables if t in text or t.rstrip("S") in text]
+def _default_enrich(state: Dict[str, Any]) -> Dict[str, Any]:
+    """Fallback enricher (no LLM): passes user_input through to enriched_query."""
+    return {**state, "enriched_query": state.get("user_input", ""), "step": "query_enriched"}
 
-    # Detect aggregations
-    aggregations = []
-    if any(kw in text for kw in ("HOW MANY", "COUNT", "NUMBER OF", "TOTAL")):
-        aggregations.append("COUNT")
-    if any(kw in text for kw in ("SUM", "TOTAL AMOUNT")):
-        aggregations.append("SUM")
-
-    # Detect time ranges
-    time_range = None
-    for phrase in ("LAST MONTH", "LAST QUARTER", "LAST YEAR", "THIS YEAR", "THIS MONTH"):
-        if phrase in text:
-            time_range = phrase.lower()
-            break
-
-    # Detect conditions
-    conditions = []
-    if "HIGH RISK" in text or "HIGH-RISK" in text:
-        conditions.append("RISK_RATING = 'HIGH'")
-    if "VERY HIGH" in text:
-        conditions.append("RISK_RATING = 'VERY_HIGH'")
-    if "PEP" in text:
-        conditions.append("IS_PEP = 'Y'")
-    if "FLAGGED" in text:
-        conditions.append("IS_FLAGGED = 'Y'")
-
-    return {
-        **state,
-        "entities": {
-            "tables": found or ["CUSTOMERS"],
-            "columns": [],
-            "conditions": conditions,
-            "time_range": time_range,
-            "aggregations": aggregations,
-            "sort_by": None,
-            "limit": None,
-        },
-        "step": "entities_extracted",
-    }
-
-
-def _no_llm_sql_generator(state: Dict[str, Any]) -> Dict[str, Any]:
-    """Fallback SQL generator: generates a simple SELECT * for the primary table."""
-    entities = state.get("entities", {})
-    tables = entities.get("tables", ["CUSTOMERS"])
-    table = tables[0] if tables else "CUSTOMERS"
-
-    conditions = entities.get("conditions", [])
-    time_range = entities.get("time_range")
-    aggregations = entities.get("aggregations", [])
-
-    # Build a minimal but reasonable Oracle SQL
-    if aggregations and "COUNT" in aggregations:
-        sql = f"SELECT COUNT(*) AS TOTAL_COUNT FROM KYC.{table}"
-        if conditions:
-            sql += f" WHERE {' AND '.join(conditions)}"
-        explanation = f"Counts the total number of records in {table}"
-    else:
-        select_cols = "*"
-        sql = f"SELECT {select_cols} FROM KYC.{table} c"
-        where_clauses = list(conditions)
-
-        if time_range and table == "TRANSACTIONS":
-            where_clauses.append(
-                "c.TRANSACTION_DATE >= TRUNC(SYSDATE, 'MM') - INTERVAL '1' MONTH"
-            )
-        elif time_range and table == "KYC_REVIEWS":
-            where_clauses.append(
-                "c.REVIEW_DATE >= ADD_MONTHS(TRUNC(SYSDATE), -12)"
-            )
-
-        if where_clauses:
-            sql += " WHERE " + " AND ".join(where_clauses)
-
-        # Always add a sort on primary key if possible
-        pk_map = {
-            "CUSTOMERS": "c.CUSTOMER_ID",
-            "ACCOUNTS": "c.ACCOUNT_ID",
-            "TRANSACTIONS": "c.TRANSACTION_DATE DESC",
-            "KYC_REVIEWS": "c.REVIEW_DATE DESC",
-            "RISK_ASSESSMENTS": "c.ASSESSED_DATE DESC",
-            "BENEFICIAL_OWNERS": "c.OWNER_ID",
-            "EMPLOYEES": "c.EMPLOYEE_ID",
-            "PEP_STATUS": "c.PEP_ID",
-        }
-        order_col = pk_map.get(table, "1")
-        sql += f" ORDER BY {order_col}"
-        explanation = f"Retrieves records from {table}"
-        if conditions:
-            explanation += f" matching: {', '.join(conditions)}"
-
-    return {
-        **state,
-        "generated_sql": sql,
-        "sql_explanation": explanation,
-        "validation_passed": True,  # trust the fallback
-        "step": "sql_generated",
-    }
 
 
 # ---------------------------------------------------------------------------
@@ -195,29 +94,35 @@ def build_pipeline(graph, config, llm=None):
     intent_fn = None
     entity_fn = None
     gen_fn = None
+    enrich_fn = None
     if llm:
         try:
             from agent.nodes import intent_classifier, entity_extractor, sql_generator
+            from agent.nodes.query_enricher import make_query_enricher
             intent_fn = intent_classifier.make_intent_classifier(llm)
             entity_fn = entity_extractor.make_entity_extractor(llm, graph=graph)
             gen_fn = sql_generator.make_sql_generator(llm)
+            enrich_fn = make_query_enricher(llm)
         except Exception as exc:
             logger.warning("LLM node setup failed: %s", exc)
-            intent_fn = entity_fn = gen_fn = None
+            intent_fn = entity_fn = gen_fn = enrich_fn = None
 
     # Build graph-aware no-LLM fallback nodes.
     # These close over `graph` so they search actual table names rather than
     # relying on a hardcoded KYC fixture.
+    #
+    # Pre-compute the schema summary once — graph is immutable after build.
+    from agent.nodes.entity_extractor import _fallback_extract, _build_schema_summary
+    _, _fallback_table_names, _ = _build_schema_summary(graph)
+
     def _graph_default_entities(state: Dict[str, Any]) -> Dict[str, Any]:
         """Graph-aware entity fallback: keyword-match against real table names."""
-        from agent.nodes.entity_extractor import _fallback_extract, _build_schema_summary
-        _, all_table_names = _build_schema_summary(graph)
-        entities = _fallback_extract(state.get("user_input", ""), all_table_names)
+        entities = _fallback_extract(state.get("user_input", ""), _fallback_table_names)
         return {**state, "entities": entities, "step": "entities_extracted"}
 
     def _graph_fallback_sql(state: Dict[str, Any]) -> Dict[str, Any]:
         """Graph-aware SQL fallback: extracts FQN from schema_context DDL."""
-        import re as _re
+        from agent.nodes.sql_generator import _extract_fqn_from_context
         entities = state.get("entities", {})
         schema_context = state.get("schema_context", "")
         tables = entities.get("tables", [])
@@ -225,24 +130,7 @@ def build_pipeline(graph, config, llm=None):
         conditions = entities.get("conditions", [])
         aggregations = entities.get("aggregations", [])
 
-        # Derive FQN from DDL header: "-- TABLE: SCHEMA.TABLE_NAME"
-        fqn: str = ""
-        if schema_context:
-            for line in schema_context.splitlines():
-                m = _re.match(r"--\s*TABLE:\s*(\w+\.\w+)", line.strip(), _re.IGNORECASE)
-                if m:
-                    candidate = m.group(1)
-                    if not hint_name or hint_name in candidate.upper():
-                        fqn = candidate
-                        break
-            if not fqn:
-                # Fall back to first DDL header regardless of hint
-                m2 = _re.search(r"--\s*TABLE:\s*(\w+\.\w+)", schema_context, _re.IGNORECASE)
-                if m2:
-                    fqn = m2.group(1)
-
-        if not fqn:
-            fqn = hint_name or "UNKNOWN_TABLE"
+        fqn = _extract_fqn_from_context(schema_context, hint_name) or hint_name or "UNKNOWN_TABLE"
 
         table_alias = "t"
         if "COUNT" in aggregations:
@@ -269,10 +157,11 @@ def build_pipeline(graph, config, llm=None):
             "step": "sql_generated",
         }
 
-    intent_node = intent_fn   if intent_fn   else _default_intent
-    entity_node = entity_fn   if entity_fn   else _graph_default_entities
+    enrich_node = enrich_fn    if enrich_fn    else _default_enrich
+    intent_node = intent_fn    if intent_fn    else _default_intent
+    entity_node = entity_fn    if entity_fn    else _graph_default_entities
     schema_node = context_builder.make_context_builder(graph)
-    gen_node    = gen_fn      if gen_fn      else _graph_fallback_sql
+    gen_node    = gen_fn       if gen_fn       else _graph_fallback_sql
     valid_node  = sql_validator.make_sql_validator()
     opt_node    = query_optimizer.make_query_optimizer()
     exec_node   = query_executor.make_query_executor(config)
@@ -316,6 +205,7 @@ def build_pipeline(graph, config, llm=None):
             return merged
 
         pipeline_nodes = [
+            ("enrich_query",    enrich_node),   # semantic enrichment — first step
             ("classify_intent", intent_node),
             ("extract_entities", entity_node),
             ("retrieve_schema", schema_node),
@@ -335,6 +225,7 @@ def build_pipeline(graph, config, llm=None):
     from agent.state import AgentState
 
     workflow = StateGraph(AgentState)
+    workflow.add_node("enrich_query",    enrich_node)
     workflow.add_node("classify_intent", intent_node)
     workflow.add_node("extract_entities", entity_node)
     workflow.add_node("retrieve_schema", schema_node)
@@ -344,7 +235,8 @@ def build_pipeline(graph, config, llm=None):
     workflow.add_node("execute_query", exec_node)
     workflow.add_node("format_result", format_node)
 
-    workflow.set_entry_point("classify_intent")
+    workflow.set_entry_point("enrich_query")
+    workflow.add_edge("enrich_query",    "classify_intent")
     workflow.add_edge("classify_intent", "extract_entities")
     workflow.add_edge("extract_entities", "retrieve_schema")
     workflow.add_edge("retrieve_schema", "generate_sql")
@@ -408,6 +300,7 @@ def run_query(
     initial_state: AgentState = {
         "user_input": user_input,
         "conversation_history": conversation_history or [],
+        "enriched_query": None,
         "intent": "DATA_QUERY",
         "entities": {},
         "schema_context": "",

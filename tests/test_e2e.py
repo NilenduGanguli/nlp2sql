@@ -338,7 +338,6 @@ class TestAgentPipelineE2E:
         from knowledge_graph.config import OracleConfig
         from agent.pipeline import build_pipeline
         cfg = AppConfig()
-        cfg.demo_mode = False
         cfg.oracle = OracleConfig(
             dsn=ORACLE_DSN,
             user=ORACLE_USER,

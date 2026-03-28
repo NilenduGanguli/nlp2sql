@@ -41,6 +41,14 @@ class AgentState(TypedDict):
     conversation_history: List[Dict[str, str]]
     """Previous turns: [{"role": "user"|"assistant", "content": "..."}]"""
 
+    enriched_query: Optional[str]
+    """
+    Domain-enriched version of user_input produced by the query_enricher node.
+    Contains business term→column mappings, filter values, and join hints added
+    by the KYC knowledge base. Downstream nodes use this in preference to
+    user_input when it is non-empty.
+    """
+
     # -------------------------------------------------------- Pipeline stages
     intent: str
     """Classified intent: DATA_QUERY | SCHEMA_EXPLORE | QUERY_EXPLAIN | QUERY_REFINE"""

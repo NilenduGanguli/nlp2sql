@@ -39,24 +39,25 @@ _MAX_TABLES_IN_PROMPT = 30
 # Dynamic schema summary builder
 # ---------------------------------------------------------------------------
 
-def _build_schema_summary(graph) -> Tuple[str, List[str]]:
+def _build_schema_summary(graph) -> Tuple[str, List[str], List[str]]:
     """
     Build a concise schema summary for the entity-extraction prompt.
 
     Returns
     -------
-    (table_list_text, all_table_names)
+    (table_list_text, all_table_names, all_schemas)
         table_list_text  – formatted for inclusion in the LLM system prompt
         all_table_names  – flat list of every table NAME in the graph (for fallback)
+        all_schemas      – sorted list of distinct schema names in the graph
     """
     try:
         from knowledge_graph.traversal import get_columns_for_table
     except Exception:
-        return "(schema unavailable)", []
+        return "(schema unavailable)", [], []
 
     all_tables = graph.get_all_nodes("Table")
     if not all_tables:
-        return "(no tables in graph)", []
+        return "(no tables in graph)", [], []
 
     # Rank tables: LLM importance_rank takes priority (1 = most important),
     # then JOIN_PATH degree, then row_count as tiebreaker.
@@ -116,7 +117,8 @@ def _build_schema_summary(graph) -> Tuple[str, List[str]]:
 
     table_list_text = "\n".join(lines) + suffix
     all_table_names = [t.get("name", "") for t in all_tables if t.get("name")]
-    return table_list_text, all_table_names
+    all_schemas = sorted({t.get("schema", "") for t in all_tables if t.get("schema")})
+    return table_list_text, all_table_names, all_schemas
 
 
 def _build_system_prompt(graph=None) -> Tuple[str, List[str]]:
@@ -126,10 +128,7 @@ def _build_system_prompt(graph=None) -> Tuple[str, List[str]]:
     to a generic Oracle extraction prompt.
     """
     if graph is not None:
-        table_list, all_names = _build_schema_summary(graph)
-        schemas = sorted({
-            t.get("schema", "") for t in graph.get_all_nodes("Table") if t.get("schema")
-        })
+        table_list, all_names, schemas = _build_schema_summary(graph)
         schema_str = ", ".join(schemas) if schemas else "unknown"
     else:
         table_list = "(schema not loaded)"
@@ -247,7 +246,8 @@ def make_entity_extractor(llm, graph=None) -> Callable[[AgentState], AgentState]
     )
 
     def extract_entities(state: AgentState) -> AgentState:
-        user_input = state.get("user_input", "")
+        # Prefer the enriched query (set by query_enricher) over raw user_input
+        user_input = state.get("enriched_query") or state.get("user_input", "")
         logger.debug("Extracting entities from: %r", user_input[:100])
 
         entities: Dict[str, Any] = {

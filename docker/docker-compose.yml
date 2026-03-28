@@ -67,15 +67,24 @@ services:
       # kyc is a standard app user without DBA or SELECT ANY DICTIONARY — always
       # use ALL_* views so table/column/index queries work without elevated privs.
       ORACLE_USE_DBA_VIEWS: "false"
-      DEMO_MODE: "false"
       # Vertex AI — leave empty if using OpenAI/Anthropic
       VERTEX_PROJECT: ${VERTEX_PROJECT:-}
       VERTEX_LOCATION: ${VERTEX_LOCATION:-us-central1}
       # Vertex AI service account — mounted from host at a fixed in-container path
       GOOGLE_APPLICATION_CREDENTIALS: /app/secret_nlp2sql-491115-200db3f6447d.json
+      # Graph cache — persist across container restarts via the named volume below.
+      # Bump GRAPH_CACHE_VERSION to force a full rebuild + LLM enhancement pass.
+      # Set GRAPH_CACHE_TTL_HOURS to a non-zero value for time-based expiry.
+      GRAPH_CACHE_PATH: /data/graph_cache
+      GRAPH_CACHE_VERSION: "1"
+      GRAPH_CACHE_TTL_HOURS: "0"
     volumes:
       - /Users/neelu/dev/nlp2sql-491115-200db3f6447d.json:/app/secret_nlp2sql-491115-200db3f6447d.json:ro
+      - graph_cache_data:/data/graph_cache
     restart: on-failure:3
 
 volumes:
   oracle_data:
+  # Persists the serialized knowledge graph across container restarts.
+  # Mount path: /data/graph_cache inside the app container.
+  graph_cache_data:

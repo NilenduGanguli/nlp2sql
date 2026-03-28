@@ -16,6 +16,10 @@ WORKDIR /app
 RUN apt-get update && apt-get install -y --no-install-recommends curl \
     && rm -rf /var/lib/apt/lists/*
 
+# Create the graph cache directory (Docker named volume will mount here).
+# Pre-creating ensures correct permissions even before the volume is attached.
+RUN mkdir -p /data/graph_cache
+
 # Install Python dependencies first (layer cache-friendly)
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt watchdog

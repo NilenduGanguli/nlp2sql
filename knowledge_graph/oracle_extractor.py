@@ -114,7 +114,7 @@ class OracleMetadataExtractor:
         logger.info("Connecting to Oracle DSN=%s USER=%s", self.config.dsn, self.config.user)
         if self.config.thick_mode and oracledb.is_thin_mode():
             try:
-                oracledb.init_oracle_client(lib_dir=self.config.oracle_lib_dir or None)
+                oracledb.init_oracle_client()
                 logger.info("oracledb thick mode enabled")
             except Exception as exc:
                 logger.warning(
@@ -151,7 +151,7 @@ class OracleMetadataExtractor:
         try:
             if self.config.thick_mode and oracledb.is_thin_mode():
                 try:
-                    oracledb.init_oracle_client(lib_dir=self.config.oracle_lib_dir or None)
+                    oracledb.init_oracle_client()
                 except Exception:
                     pass  # fall back to thin mode silently
             conn = oracledb.connect(

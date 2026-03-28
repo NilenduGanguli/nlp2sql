@@ -36,12 +36,10 @@ class OracleConfig:
         default_factory=lambda: os.getenv("ORACLE_USE_DBA_VIEWS", "true").lower() == "true"
     )
     # Enable oracledb thick mode (requires Oracle Instant Client on the host).
-    # Set ORACLE_THICK_MODE=true and optionally ORACLE_LIB_DIR=/path/to/instantclient.
+    # When enabled, oracledb.init_oracle_client() is called with no lib_dir so
+    # it discovers the client libraries via LD_LIBRARY_PATH / PATH automatically.
     thick_mode: bool = field(
         default_factory=lambda: os.getenv("ORACLE_THICK_MODE", "false").lower() == "true"
-    )
-    oracle_lib_dir: str = field(
-        default_factory=lambda: os.getenv("ORACLE_LIB_DIR", "")
     )
 
     def __post_init__(self) -> None:

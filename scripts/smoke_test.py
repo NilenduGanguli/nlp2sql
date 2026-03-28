@@ -27,7 +27,6 @@ cfg = AppConfig()
 print(f"\nConfig:")
 print(f"  oracle  : {cfg.oracle.dsn}  user={cfg.oracle.user}  schema={cfg.oracle.target_schemas}")
 print(f"  llm     : {cfg.llm_provider}/{cfg.llm_model}")
-print(f"  demo    : {cfg.demo_mode}")
 
 # ── Build knowledge graph from live Oracle ────────────────────────────────────
 print("\nExtracting Oracle metadata...")
