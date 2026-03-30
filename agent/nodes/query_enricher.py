@@ -1,7 +1,7 @@
 """
 Query Enricher Node
 ====================
-First node in the pipeline. Reads KYC business domain knowledge from
+First node in the pipeline. Reads business domain knowledge from
 ``kyc_business_knowledge.txt`` (or the path in env var KYC_KNOWLEDGE_FILE)
 and uses an LLM to rewrite the user's query with precise domain context:
 
@@ -11,13 +11,20 @@ and uses an LLM to rewrite the user's query with precise domain context:
   - Business rules and constraints noted
   - Oracle-specific SQL conventions flagged
 
-Purpose: act as a KYC subject-matter expert that pre-processes the query
+Purpose: act as a domain subject-matter expert that pre-processes the query
 so that the entity extractor, schema retriever, and SQL generator all work
 from a richer, less ambiguous specification — reducing hallucinated column
 names, wrong filter values, and missing JOINs.
 
-If the knowledge file is missing or the LLM call fails the node passes
+The knowledge file covers only the MOST IMPORTANT tables in the schema —
+it is intentionally not exhaustive. The SQL generator always has access to
+the full schema DDL. The enricher uses the knowledge file for domain-level
+term mappings and join hints, not as a complete table catalogue.
+
+If the knowledge file is missing/empty or the LLM call fails the node passes
 through unchanged (``enriched_query = user_input``).
+
+Enable/disable via the ``QUERY_ENRICHER_ENABLED`` env var (default: true).
 """
 
 from __future__ import annotations
@@ -60,26 +67,32 @@ def _load_knowledge(path: str) -> str:
 # System prompt (built once per file path)
 # --------------------------------------------------------------------------
 _SYSTEM_TEMPLATE = """\
-You are a senior KYC (Know Your Customer) compliance database expert with deep \
-knowledge of AML regulations, customer risk classification, and the specific \
-data model described below.
+You are a senior database and compliance domain expert helping an NLP-to-SQL \
+system produce accurate Oracle SQL queries.
 
-Your task is to interpret a user's natural-language query about the KYC database \
-and rewrite it as a precise, grounded query specification that an SQL generator can \
-use to produce a correct Oracle SQL statement.
+Your task: interpret the user's natural-language query and rewrite it as a \
+precise, grounded specification that the SQL generator can use.
 
-Use the KNOWLEDGE BASE to:
-  • Map vague business terms to exact column names and their allowed values
+Use the KNOWLEDGE BASE below to:
+  • Map vague business terms to exact column names and allowed values
     (e.g. "high risk customers" → CUSTOMERS.RISK_RATING = 'HIGH')
   • Identify which tables are needed and what JOINs are implied
-  • Surface any business rules or constraints the query must respect
-  • Flag any Oracle-specific conventions (SYSDATE, FETCH FIRST N ROWS)
+  • Surface business rules or constraints the query must respect
+  • Flag Oracle-specific conventions (SYSDATE, FETCH FIRST N ROWS)
+
+⚠ IMPORTANT — the knowledge base is NOT exhaustive:
+  The database may contain many more tables than those listed below. This file \
+covers only the most frequently queried, business-critical tables. For tables \
+not mentioned here, the SQL generator has access to the complete schema DDL \
+and can resolve them from context. Do NOT assume a table doesn't exist just \
+because it isn't in this knowledge base.
 
 Do NOT write SQL. Write a structured English specification that preserves the
-user's original intent and adds precision.
+user's original intent and adds precision. If the knowledge base has no \
+relevant information for a query, say so briefly and pass the query through.
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-KNOWLEDGE BASE:
+KNOWLEDGE BASE (key tables only — not exhaustive):
 {knowledge}
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 """

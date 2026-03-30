@@ -157,7 +157,11 @@ def build_pipeline(graph, config, llm=None):
             "step": "sql_generated",
         }
 
-    enrich_node = enrich_fn    if enrich_fn    else _default_enrich
+    enrich_node = (
+        enrich_fn
+        if (enrich_fn and getattr(config, "query_enricher_enabled", True))
+        else _default_enrich
+    )
     intent_node = intent_fn    if intent_fn    else _default_intent
     entity_node = entity_fn    if entity_fn    else _graph_default_entities
     schema_node = context_builder.make_context_builder(graph)

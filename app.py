@@ -165,6 +165,11 @@ _SUGGESTED_QUERIES = [
     "Find all PEP-flagged customers and their beneficial owners",
 ]
 
+# Default knowledge file location (same as query_enricher uses)
+_DEFAULT_KNOWLEDGE_FILE = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), "kyc_business_knowledge.txt"
+)
+
 # ---------------------------------------------------------------------------
 # Session state initialization
 # ---------------------------------------------------------------------------
@@ -207,6 +212,9 @@ def init_session_state() -> None:
 
     if "graph_llm_enhanced" not in st.session_state:
         st.session_state.graph_llm_enhanced = False
+
+    if "knowledge_file_checked" not in st.session_state:
+        st.session_state.knowledge_file_checked = False
 
 
 # ---------------------------------------------------------------------------
@@ -1248,6 +1256,61 @@ def render_relationships_tab() -> None:
 
 
 # ---------------------------------------------------------------------------
+# Knowledge file generator (runs once at startup if file is empty)
+# ---------------------------------------------------------------------------
+
+def _maybe_generate_knowledge_file(config, graph) -> bool:
+    """
+    Generate the business knowledge file from schema metadata if it is empty.
+
+    Called once per session (guarded by ``st.session_state.knowledge_file_checked``).
+    Returns True when the file was (re)generated so the caller can rebuild the
+    pipeline with the fresh content.
+    """
+    knowledge_path = os.getenv("KYC_KNOWLEDGE_FILE", _DEFAULT_KNOWLEDGE_FILE)
+
+    # ── Is the file already populated? ────────────────────────────────────────
+    try:
+        content = open(knowledge_path, encoding="utf-8").read().strip()
+        if content:
+            return False  # already has content — nothing to do
+    except FileNotFoundError:
+        pass  # missing → generate
+
+    # ── Skip if no LLM credentials ────────────────────────────────────────────
+    _provider = getattr(config, "llm_provider", "").lower()
+    _has_creds = bool(getattr(config, "llm_api_key", "")) or (_provider == "vertex")
+    if not _has_creds or graph is None:
+        logger.info(
+            "Knowledge file is empty but LLM credentials are missing — skipping generation."
+        )
+        return False
+
+    # ── Generate ───────────────────────────────────────────────────────────────
+    logger.info("Knowledge file is empty — generating from schema metadata.")
+    with st.spinner(
+        "Generating business knowledge file from schema metadata "
+        "(first-time setup — this may take a minute)…"
+    ):
+        try:
+            from agent.llm import get_llm
+            from knowledge_graph.knowledge_generator import generate_knowledge_file
+            from agent.nodes.query_enricher import _load_knowledge
+
+            llm = get_llm(config)
+            success = generate_knowledge_file(graph, llm, knowledge_path)
+            if success:
+                # Invalidate the lru_cache so the enricher reads the new file
+                _load_knowledge.cache_clear()
+                logger.info("Knowledge file generated; pipeline will use fresh content.")
+                return True
+        except Exception as exc:
+            logger.warning("Knowledge file generation failed: %s", exc)
+
+    return False
+
+
+# ---------------------------------------------------------------------------
 # Main app entry point
 # ---------------------------------------------------------------------------
 
@@ -1270,13 +1333,22 @@ def main() -> None:
         except Exception as exc:
             st.error(f"Failed to initialize knowledge graph: {exc}")
 
+    # Generate knowledge file at first startup if empty — must happen BEFORE
+    # pipeline build so the enricher picks up the freshly generated content.
+    if not st.session_state.knowledge_file_checked:
+        _generated = _maybe_generate_knowledge_file(config, st.session_state.graph)
+        st.session_state.knowledge_file_checked = True
+        if _generated:
+            # Clear the cached pipeline so it rebuilds with the new knowledge
+            get_pipeline.clear()
+            st.session_state.pipeline = None
+
     # Pre-load pipeline if not yet loaded
     if st.session_state.pipeline is None:
         try:
             st.session_state.pipeline = get_pipeline(config_hash, config.llm_api_key)
         except Exception as exc:
             st.warning(f"Pipeline not fully initialized: {exc}")
-
     # LLM graph enhancement — runs once per process after graph + pipeline are ready.
     # Uses the LLM to rank tables by importance, infer missing FK relationships,
     # and generate descriptions for undocumented tables.

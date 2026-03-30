@@ -52,6 +52,13 @@ try:
         max_sql_retries: int = Field(default=3)
         token_budget: int = Field(default=4000)
 
+        # --- Query enricher ---
+        # Set QUERY_ENRICHER_ENABLED=false to skip enrichment (useful for debugging
+        # or when the knowledge file is not yet populated).
+        query_enricher_enabled: bool = Field(
+            default=True, validation_alias="QUERY_ENRICHER_ENABLED"
+        )
+
         # --- Composed sub-configs (not settable via env directly) ---
         oracle: OracleConfig = Field(default_factory=OracleConfig)
         graph: GraphConfig = Field(default_factory=GraphConfig)
@@ -117,5 +124,12 @@ except ImportError:
             )
             self.max_sql_retries = int(kwargs.get("max_sql_retries", 3))
             self.token_budget = int(kwargs.get("token_budget", 4000))
+            self.query_enricher_enabled = bool(
+                kwargs.get(
+                    "query_enricher_enabled",
+                    os.getenv("QUERY_ENRICHER_ENABLED", "true").lower()
+                    not in ("false", "0", "no"),
+                )
+            )
             self.oracle = kwargs.get("oracle", OracleConfig())
             self.graph = kwargs.get("graph", GraphConfig())
