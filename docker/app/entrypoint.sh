@@ -43,13 +43,13 @@ else
 fi
 
 # =============================================================================
-# Stage 4 — Launch Streamlit
+# Stage 4 — Launch FastAPI backend
 # =============================================================================
-hdr "Stage 4: Starting Streamlit"
-ok "App will be available at http://0.0.0.0:${STREAMLIT_PORT:-8501}"
+hdr "Stage 4: Starting FastAPI backend"
+ok "API will be available at http://0.0.0.0:${API_PORT:-8000}"
 
-exec streamlit run app.py \
-    --server.port "${STREAMLIT_PORT:-8501}" \
-    --server.address 0.0.0.0 \
-    --server.headless true \
-    --browser.gatherUsageStats false
+exec uvicorn backend.main:app \
+    --host 0.0.0.0 \
+    --port "${API_PORT:-8000}" \
+    --workers 1 \
+    --log-level info

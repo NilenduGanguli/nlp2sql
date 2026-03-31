@@ -29,10 +29,16 @@ anthropic>=0.40.0
 # SQL parsing and dialect translation
 sqlglot>=25.0.0
 
-# Streamlit frontend
+# Streamlit frontend (kept for reference; new entry point is FastAPI backend)
 streamlit>=1.40.0
 pandas>=2.0.0
 plotly>=5.0.0
+
+# FastAPI backend
+fastapi>=0.115.0
+uvicorn[standard]>=0.30.0
+python-multipart>=0.0.9
+sse-starlette>=2.1.0
 
 # Testing
 pytest>=7.4.0

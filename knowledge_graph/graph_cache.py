@@ -149,7 +149,7 @@ def load_graph(path: str, max_age_hours: float = 0.0) -> Optional[Tuple[Any, boo
         )
         return None
 
-    if max_age_hours > 0:
+    if max_age_hours is not None and max_age_hours > 0:
         age_hours = (time.time() - payload.get("created_at", 0)) / 3600
         if age_hours > max_age_hours:
             logger.info(

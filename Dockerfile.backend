@@ -1,0 +1,24 @@
+FROM python:3.11-slim
+
+WORKDIR /app
+
+# Install system dependencies for oracledb thin mode (no Instant Client needed)
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    gcc \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+COPY . .
+
+# Create graph cache directory (will be overridden by Docker volume)
+RUN mkdir -p /data/graph_cache
+
+EXPOSE 8000
+
+# Make entrypoint script executable
+RUN chmod +x docker/app/entrypoint.sh
+
+# Entrypoint: wait for Oracle → init schema → build graph → start FastAPI
+ENTRYPOINT ["bash", "docker/app/entrypoint.sh"]

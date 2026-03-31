@@ -1,0 +1,190 @@
+// ──────────────────────────────────────────────────────────
+// Health / System
+// ──────────────────────────────────────────────────────────
+export interface HealthStatus {
+  status: string
+  graph_loaded: boolean
+  graph_tables: number
+  graph_columns: number
+  llm_ready: boolean
+  llm_enhanced: boolean
+  oracle_connected: boolean
+  knowledge_file_ready: boolean
+}
+
+// ──────────────────────────────────────────────────────────
+// Schema
+// ──────────────────────────────────────────────────────────
+export interface SchemaStats {
+  table_count: number
+  column_count: number
+  fk_count: number
+  join_path_count: number
+  schemas: string[]
+  llm_enhanced: boolean
+}
+
+export interface TableSummary {
+  fqn: string
+  name: string
+  schema_name: string
+  row_count: number | null
+  table_type: string
+  comments: string | null
+  importance_tier: string | null
+  importance_rank: number | null
+  llm_description: string | null
+  column_count: number
+  partitioned?: string
+}
+
+export interface ColumnDetail {
+  name: string
+  data_type: string
+  nullable: string | null   // Oracle returns "Y" or "N"
+  comments: string | null
+  is_pk: boolean
+  is_fk: boolean
+}
+
+export interface ForeignKeyRef {
+  constraint_name: string
+  fk_col: string      // column in this table
+  ref_table: string   // referenced table FQN
+  ref_col: string     // referenced column
+}
+
+export interface TableDetail extends TableSummary {
+  columns: ColumnDetail[]
+  foreign_keys: ForeignKeyRef[]
+  constraints: unknown[]
+}
+
+export interface TableListResponse {
+  items: TableSummary[]
+  total: number
+  page: number
+  pages: number
+  page_size: number
+}
+
+export interface SearchResult {
+  fqn: string
+  name: string
+  schema_name: string
+  label: string           // was match_type — backend sends "label"
+  match_score: number     // was score
+  description: string | null  // was comments
+}
+
+export interface SearchResponse {
+  query: string
+  results: SearchResult[]
+}
+
+// ──────────────────────────────────────────────────────────
+// Query / Chat
+// ──────────────────────────────────────────────────────────
+export interface ConversationMessage {
+  role: 'user' | 'assistant'
+  content: string
+}
+
+export type QueryStep =
+  | 'enriching'
+  | 'classifying'
+  | 'extracting'
+  | 'retrieving'
+  | 'generating'
+  | 'validating'
+  | 'optimizing'
+  | 'executing'
+  | 'formatting'
+
+export interface QueryResult {
+  type: string
+  summary: string
+  sql: string
+  explanation: string
+  columns: string[]
+  rows: unknown[][]
+  total_rows: number
+  execution_time_ms: number
+  data_source: string
+  schema_context_tables: string[]
+  validation_errors: string[]
+}
+
+export type ChatMessageType = 'user' | 'result' | 'error'
+
+export interface ChatMessage {
+  id: string
+  type: ChatMessageType
+  content: string
+  result?: QueryResult
+  timestamp: Date
+}
+
+// ──────────────────────────────────────────────────────────
+// SQL Execution
+// ──────────────────────────────────────────────────────────
+export interface ExecuteResult {
+  columns: string[]
+  rows: unknown[][]
+  total_rows: number
+  execution_time_ms: number
+  error?: string
+}
+
+export interface FormatResult {
+  formatted_sql: string
+}
+
+// ──────────────────────────────────────────────────────────
+// Graph
+// ──────────────────────────────────────────────────────────
+export interface GraphNode {
+  id: string
+  label: string
+  group: string
+  name: string
+  schema_name: string
+  importance_rank: number | null
+  row_count: number | null
+  comments: string | null
+}
+
+export interface GraphEdge {
+  id: string
+  from_id: string
+  to_id: string
+  rel_type: string
+  weight: number
+  source: string
+}
+
+export interface GraphVisualization {
+  nodes: GraphNode[]
+  edges: GraphEdge[]
+  total_tables: number
+  shown_tables: number
+}
+
+export interface JoinPath {
+  found: boolean
+  from_table: string
+  to_table: string
+  join_columns: Array<{ src: string; tgt: string; constraint: string }>
+  join_type: string | null
+  hops: number
+  source: string
+  sql_snippet: string | null
+}
+
+export interface ForeignKey {
+  from_table: string
+  to_table: string
+  from_col: string
+  to_col: string
+  constraint_name: string
+}

@@ -2,19 +2,22 @@
 # KnowledgeQL — Full-Stack Docker Compose
 #
 # Services:
-#   oracle  — Oracle Free 23c database (gvenzl/oracle-free)
-#   app     — KnowledgeQL Streamlit application
+#   oracle   — Oracle Free 23c database (gvenzl/oracle-free)
+#   backend  — KnowledgeQL FastAPI backend (port 8000)
+#   frontend — React app served by nginx (port 3000), proxies /api → backend
 #
 # Usage:
-#   docker compose -f docker/docker-compose.yml up          # start everything
-#   docker compose -f docker/docker-compose.yml up oracle   # DB only
-#   docker compose -f docker/docker-compose.yml logs -f app # tail app logs
-#   docker compose -f docker/docker-compose.yml down -v     # teardown + data
+#   docker compose -f docker/docker-compose.yml up              # full stack
+#   docker compose -f docker/docker-compose.yml up oracle       # DB only
+#   docker compose -f docker/docker-compose.yml up backend      # backend only
+#   docker compose -f docker/docker-compose.yml logs -f backend # tail logs
+#   docker compose -f docker/docker-compose.yml down -v         # teardown
 #
-# The app container waits for Oracle to be healthy, then:
-#   1. Ensures KYC schema exists (creates tables + data if missing)
-#   2. Builds the in-memory knowledge graph from live Oracle metadata
-#   3. Starts Streamlit on port 8501
+# Startup sequence (backend):
+#   1. Wait for Oracle to be healthy
+#   2. Ensure schema exists (runs DDL + seed data if needed)
+#   3. Build knowledge graph from Oracle — or load from cache
+#   4. Start FastAPI/uvicorn on :8000
 # =============================================================================
 
 services:
@@ -39,21 +42,18 @@ services:
       retries: 15
       start_period: 120s
 
-  # ── KnowledgeQL Streamlit App ───────────────────────────────────────────────
-  app:
+  # ── KnowledgeQL FastAPI Backend ─────────────────────────────────────────────
+  backend:
     build:
-      context: ..            # project root (where Dockerfile lives)
-      dockerfile: Dockerfile
-    image: knowledgeql-app:latest
-    container_name: nlp2sql_app
+      context: ..            # project root (Dockerfile.backend lives there)
+      dockerfile: Dockerfile.backend
+    image: knowledgeql-backend:latest
+    container_name: nlp2sql_backend
     depends_on:
       oracle:
         condition: service_healthy
     ports:
-      - "8502:8501"
-    # env_file supplies LLM keys and other settings from the project .env.
-    # The ORACLE_DSN override below points to the oracle service on the
-    # internal compose network instead of localhost.
+      - "8000:8000"
     env_file:
       - ../.env
     environment:
@@ -61,22 +61,12 @@ services:
       ORACLE_USER: kyc
       ORACLE_PASSWORD: KycPassword1
       ORACLE_TARGET_SCHEMAS: KYC
-      # Container uses thin mode — no Oracle Instant Client in the image.
-      # The host .env may have ORACLE_THICK_MODE=true; override it here.
       ORACLE_THICK_MODE: "false"
-      # kyc is a standard app user without DBA or SELECT ANY DICTIONARY — always
-      # use ALL_* views so table/column/index queries work without elevated privs.
       ORACLE_USE_DBA_VIEWS: "false"
-      # Query enricher — set to false to disable semantic enrichment
       QUERY_ENRICHER_ENABLED: "true"
-      # Vertex AI — leave empty if using OpenAI/Anthropic
       VERTEX_PROJECT: ${VERTEX_PROJECT:-}
       VERTEX_LOCATION: ${VERTEX_LOCATION:-us-central1}
-      # Vertex AI service account — mounted from host at a fixed in-container path
       GOOGLE_APPLICATION_CREDENTIALS: /app/secret_nlp2sql-491115-200db3f6447d.json
-      # Graph cache — persist across container restarts via the named volume below.
-      # Bump GRAPH_CACHE_VERSION to force a full rebuild + LLM enhancement pass.
-      # Set GRAPH_CACHE_TTL_HOURS to a non-zero value for time-based expiry.
       GRAPH_CACHE_PATH: /data/graph_cache
       GRAPH_CACHE_VERSION: "1"
       GRAPH_CACHE_TTL_HOURS: "0"
@@ -85,8 +75,21 @@ services:
       - graph_cache_data:/data/graph_cache
     restart: on-failure:3
 
+  # ── React Frontend (nginx) ───────────────────────────────────────────────────
+  frontend:
+    build:
+      context: ..
+      dockerfile: Dockerfile.frontend
+    image: knowledgeql-frontend:latest
+    container_name: nlp2sql_frontend
+    depends_on:
+      - backend
+    ports:
+      - "3000:3000"
+    restart: on-failure:3
+
 volumes:
   oracle_data:
-  # Persists the serialized knowledge graph across container restarts.
-  # Mount path: /data/graph_cache inside the app container.
+  # Persists the serialised knowledge graph across container restarts.
+  # Mount path: /data/graph_cache inside the backend container.
   graph_cache_data:
