@@ -88,9 +88,14 @@ async def stream_query(
                         last_state = state
 
                         step = _NODE_TO_STEP.get(node_name, node_name)
-                        loop.call_soon_threadsafe(
-                            queue.put_nowait, ("step", {"step": step})
-                        )
+                        # Don't show "enriching" when enricher is disabled (node
+                        # is a no-op pass-through, not a real LLM call)
+                        if node_name == "enrich_query" and not getattr(config, "query_enricher_enabled", True):
+                            pass
+                        else:
+                            loop.call_soon_threadsafe(
+                                queue.put_nowait, ("step", {"step": step})
+                            )
 
                         # Emit SQL as soon as generator finishes
                         if node_name == "generate_sql" and state.get("generated_sql"):

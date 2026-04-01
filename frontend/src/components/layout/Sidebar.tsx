@@ -5,20 +5,10 @@ import { useTables } from '../../hooks/useTables'
 import { useSchemaStats } from '../../hooks/useSchema'
 import { useRebuildGraph } from '../../hooks/useRebuildGraph'
 import { useSettingsStore } from '../../store/settingsStore'
+import { useKnowledgeFile, useRegenerateKnowledge } from '../../hooks/useKnowledgeFile'
 import { StatusPill } from '../common/StatusPill'
 import { SearchBox } from '../common/SearchBox'
 import type { TableSummary } from '../../types'
-
-const TIER_COLORS: Record<string, string> = {
-  core: '#3b82f6',
-  reference: '#6366f1',
-  audit: '#6b7280',
-  utility: '#9ca3af',
-}
-
-function tierColor(tier: string | null) {
-  return TIER_COLORS[tier ?? ''] ?? '#9ca3af'
-}
 
 interface SidebarProps {
   isOpen: boolean
@@ -31,8 +21,12 @@ export const Sidebar: React.FC<SidebarProps> = ({ isOpen, onToggle, onTableSelec
   const { data: stats } = useSchemaStats()
   const { data: tables, isLoading: tablesLoading } = useTables()
   const { mutate: rebuild, isPending: rebuilding } = useRebuildGraph()
+  const { data: kf, isLoading: kfLoading, refetch: refetchKf } = useKnowledgeFile()
+  const { mutate: regenerate, isPending: regenerating } = useRegenerateKnowledge()
   const [search, setSearch] = useState('')
   const [settingsOpen, setSettingsOpen] = useState(false)
+  const [knowledgeOpen, setKnowledgeOpen] = useState(false)
+  const [regenMsg, setRegenMsg] = useState<string | null>(null)
   const [applyMsg, setApplyMsg] = useState<string | null>(null)
   const parentRef = useRef<HTMLDivElement>(null)
 
@@ -265,20 +259,6 @@ export const Sidebar: React.FC<SidebarProps> = ({ isOpen, onToggle, onTableSelec
                     >
                       {table.name}
                     </span>
-                    {table.importance_tier && (
-                      <span
-                        style={{
-                          fontSize: 9,
-                          fontWeight: 700,
-                          color: tierColor(table.importance_tier),
-                          textTransform: 'uppercase',
-                          letterSpacing: '0.06em',
-                          flexShrink: 0,
-                        }}
-                      >
-                        {table.importance_tier}
-                      </span>
-                    )}
                   </div>
                   <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
                     <span style={{ fontSize: 10, color: '#9090a8' }}>{table.schema_name}</span>
@@ -294,6 +274,143 @@ export const Sidebar: React.FC<SidebarProps> = ({ isOpen, onToggle, onTableSelec
             )
           })}
         </div>
+      </div>
+
+      {/* Business Knowledge section */}
+      <div style={{ borderTop: '1px solid #3a3a5c', flexShrink: 0 }}>
+        <button
+          onClick={() => { setKnowledgeOpen((v) => !v); if (!knowledgeOpen) void refetchKf() }}
+          style={{
+            width: '100%',
+            padding: '8px 12px',
+            background: 'none',
+            border: 'none',
+            textAlign: 'left',
+            color: '#9090a8',
+            fontSize: 11,
+            fontWeight: 600,
+            textTransform: 'uppercase',
+            letterSpacing: '0.06em',
+            cursor: 'pointer',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+          }}
+        >
+          <span>Business Knowledge</span>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+            {kf && (
+              <span
+                style={{
+                  fontSize: 9,
+                  padding: '1px 5px',
+                  borderRadius: 999,
+                  background: kf.enricher_enabled ? 'rgba(74,222,128,0.12)' : 'rgba(248,113,113,0.12)',
+                  color: kf.enricher_enabled ? '#4ade80' : '#f87171',
+                  fontWeight: 600,
+                  textTransform: 'none',
+                  letterSpacing: 0,
+                }}
+              >
+                {kf.enricher_enabled ? 'ON' : 'OFF'}
+              </span>
+            )}
+            <span style={{ fontSize: 14 }}>{knowledgeOpen ? '▲' : '▼'}</span>
+          </div>
+        </button>
+
+        {knowledgeOpen && (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 0 }}>
+            {/* Action bar */}
+            <div style={{ padding: '0 12px 6px', display: 'flex', gap: 6, alignItems: 'center' }}>
+              {kf && (
+                <span style={{ fontSize: 10, color: '#9090a8', flex: 1 }}>
+                  {kf.size_bytes === 0 ? 'empty' : `${kf.size_bytes.toLocaleString()} bytes`}
+                </span>
+              )}
+              <button
+                onClick={() => void refetchKf()}
+                style={{
+                  background: 'none',
+                  border: '1px solid #3a3a5c',
+                  borderRadius: 4,
+                  color: '#9090a8',
+                  fontSize: 10,
+                  padding: '2px 7px',
+                  cursor: 'pointer',
+                }}
+              >
+                Refresh
+              </button>
+              <button
+                onClick={() => {
+                  setRegenMsg(null)
+                  regenerate(undefined, {
+                    onSuccess: () => {
+                      setRegenMsg('Queued — refresh in ~30s')
+                      setTimeout(() => setRegenMsg(null), 15000)
+                    },
+                    onError: (err) => setRegenMsg((err as Error).message),
+                  })
+                }}
+                disabled={regenerating || !kf}
+                style={{
+                  background: regenerating ? '#3a3a5c' : 'rgba(124,106,247,0.15)',
+                  border: '1px solid #7c6af7',
+                  borderRadius: 4,
+                  color: regenerating ? '#9090a8' : '#7c6af7',
+                  fontSize: 10,
+                  fontWeight: 600,
+                  padding: '2px 7px',
+                  cursor: regenerating ? 'not-allowed' : 'pointer',
+                }}
+              >
+                {regenerating ? '…' : 'Regenerate'}
+              </button>
+            </div>
+
+            {regenMsg && (
+              <div style={{ padding: '0 12px 6px', fontSize: 10, color: regenMsg.startsWith('Queued') ? '#4ade80' : '#f87171' }}>
+                {regenMsg}
+              </div>
+            )}
+
+            {/* Content */}
+            <div
+              style={{
+                maxHeight: 200,
+                overflowY: 'auto',
+                margin: '0 12px 10px',
+                background: '#1e1e2e',
+                border: '1px solid #3a3a5c',
+                borderRadius: 4,
+              }}
+            >
+              {kfLoading ? (
+                <div style={{ padding: 10, color: '#9090a8', fontSize: 11 }}>Loading…</div>
+              ) : kf?.content ? (
+                <pre
+                  style={{
+                    margin: 0,
+                    padding: '8px 10px',
+                    fontFamily: 'ui-monospace, Consolas, monospace',
+                    fontSize: 10,
+                    color: '#c0c0d8',
+                    lineHeight: 1.6,
+                    whiteSpace: 'pre-wrap',
+                    wordBreak: 'break-word',
+                  }}
+                >
+                  {kf.content}
+                </pre>
+              ) : (
+                <div style={{ padding: 10, color: '#9090a8', fontSize: 11 }}>
+                  File is empty. Click <strong style={{ color: '#7c6af7' }}>Regenerate</strong>.
+                </div>
+              )}
+            </div>
+          </div>
+        )}
       </div>
 
       {/* Settings section */}

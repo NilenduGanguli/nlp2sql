@@ -11,7 +11,10 @@ import anyio
 from fastapi import APIRouter, Depends, Request
 
 from backend.deps import get_config, get_graph
-from backend.models import CacheInfoResponse, ConfigResponse, ConfigUpdateRequest, RebuildResponse
+from backend.models import (
+    CacheInfoResponse, ConfigResponse, ConfigUpdateRequest,
+    KnowledgeFileResponse, RebuildResponse,
+)
 from knowledge_graph.graph_cache import (
     cache_info, get_cache_path, invalidate_cache, load_graph, save_graph,
 )
@@ -158,4 +161,60 @@ async def update_llm_config(
     return RebuildResponse(
         status="started",
         message=f"LLM updated to {body.llm_provider}/{body.llm_model}. Pipeline rebuilding.",
+    )
+
+
+def _knowledge_file_path() -> str:
+    return os.getenv("KYC_KNOWLEDGE_FILE", "kyc_business_knowledge.txt")
+
+
+@router.get("/knowledge-file", response_model=KnowledgeFileResponse)
+async def get_knowledge_file(config=Depends(get_config)):
+    """Return the current business knowledge file content."""
+    path = _knowledge_file_path()
+    try:
+        content = open(path, encoding="utf-8").read()
+    except FileNotFoundError:
+        content = ""
+    return KnowledgeFileResponse(
+        content=content,
+        path=path,
+        size_bytes=len(content.encode("utf-8")),
+        enricher_enabled=getattr(config, "query_enricher_enabled", True),
+    )
+
+
+@router.post("/knowledge-file/regenerate", response_model=RebuildResponse)
+async def regenerate_knowledge_file(request: Request, config=Depends(get_config)):
+    """Regenerate the business knowledge file from the graph (requires LLM)."""
+    from fastapi import HTTPException
+
+    app = request.app
+    llm = getattr(app.state, "llm", None)
+    if not llm:
+        raise HTTPException(status_code=503, detail="LLM not configured — cannot regenerate knowledge file")
+
+    async def _regen():
+        path = _knowledge_file_path()
+        try:
+            from knowledge_graph.knowledge_generator import generate_knowledge_file
+            from agent.nodes.query_enricher import _load_knowledge
+            from agent.pipeline import build_pipeline
+
+            ok = await anyio.to_thread.run_sync(
+                lambda: generate_knowledge_file(app.state.graph, llm, path)
+            )
+            if ok:
+                _load_knowledge.cache_clear()
+                app.state.pipeline = await anyio.to_thread.run_sync(
+                    lambda: build_pipeline(app.state.graph, config, llm)
+                )
+                logger.info("Knowledge file regenerated and pipeline rebuilt")
+        except Exception as exc:
+            logger.error("Knowledge file regeneration failed: %s", exc, exc_info=True)
+
+    asyncio.create_task(_regen())
+    return RebuildResponse(
+        status="started",
+        message="Knowledge file regeneration started. Refresh in ~30s.",
     )

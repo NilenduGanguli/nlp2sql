@@ -1,5 +1,6 @@
 import React, { useState, useMemo } from 'react'
 import { useGraph } from '../hooks/useGraph'
+import { useKnowledgeFile, useRegenerateKnowledge } from '../hooks/useKnowledgeFile'
 import { GraphCanvas } from '../components/graph/GraphCanvas'
 import { GraphControls } from '../components/graph/GraphControls'
 
@@ -7,8 +8,12 @@ export const GraphPage: React.FC = () => {
   const [limit, setLimit] = useState(200)
   const [tableSearch, setTableSearch] = useState('')
   const [resetKey, setResetKey] = useState(0)
+  const [showKnowledge, setShowKnowledge] = useState(false)
 
   const { data, isLoading, error } = useGraph(limit)
+  const { data: kf, isLoading: kfLoading, refetch: refetchKf } = useKnowledgeFile()
+  const { mutate: regenerate, isPending: regenerating, error: regenError, isSuccess: regenStarted } =
+    useRegenerateKnowledge()
 
   const filteredNodes = useMemo(() => {
     if (!data) return []
@@ -36,7 +41,130 @@ export const GraphPage: React.FC = () => {
         tableSearch={tableSearch}
         onTableSearchChange={setTableSearch}
         onReset={handleReset}
+        showKnowledge={showKnowledge}
+        onToggleKnowledge={() => setShowKnowledge((v) => !v)}
       />
+
+      {/* Knowledge file panel */}
+      {showKnowledge && (
+        <div
+          style={{
+            flexShrink: 0,
+            borderBottom: '1px solid #3a3a5c',
+            background: '#232336',
+            maxHeight: 280,
+            display: 'flex',
+            flexDirection: 'column',
+          }}
+        >
+          {/* Header */}
+          <div
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: 10,
+              padding: '6px 14px',
+              borderBottom: '1px solid #3a3a5c',
+              flexShrink: 0,
+            }}
+          >
+            <span style={{ fontSize: 12, fontWeight: 600, color: '#c0c0d8' }}>
+              Business Knowledge File
+            </span>
+            {kf && (
+              <>
+                <span style={{ fontSize: 11, color: '#9090a8' }}>{kf.path}</span>
+                <span style={{ fontSize: 11, color: '#9090a8' }}>·</span>
+                <span style={{ fontSize: 11, color: '#9090a8' }}>
+                  {kf.size_bytes === 0 ? 'empty' : `${kf.size_bytes.toLocaleString()} bytes`}
+                </span>
+                <span style={{ fontSize: 11, color: '#9090a8' }}>·</span>
+                <span
+                  style={{
+                    fontSize: 10,
+                    padding: '1px 7px',
+                    borderRadius: 999,
+                    background: kf.enricher_enabled
+                      ? 'rgba(74,222,128,0.12)'
+                      : 'rgba(248,113,113,0.12)',
+                    color: kf.enricher_enabled ? '#4ade80' : '#f87171',
+                    fontWeight: 600,
+                  }}
+                >
+                  enricher {kf.enricher_enabled ? 'ON' : 'OFF'}
+                </span>
+              </>
+            )}
+            <div style={{ flex: 1 }} />
+            <button
+              onClick={() => void refetchKf()}
+              title="Refresh"
+              style={{
+                background: 'none',
+                border: '1px solid #3a3a5c',
+                borderRadius: 4,
+                color: '#9090a8',
+                fontSize: 11,
+                padding: '2px 8px',
+                cursor: 'pointer',
+              }}
+            >
+              Refresh
+            </button>
+            <button
+              onClick={() => regenerate()}
+              disabled={regenerating || !kf}
+              title="Regenerate from graph using LLM"
+              style={{
+                background: regenerating ? '#3a3a5c' : 'rgba(124,106,247,0.15)',
+                border: '1px solid #7c6af7',
+                borderRadius: 4,
+                color: regenerating ? '#9090a8' : '#7c6af7',
+                fontSize: 11,
+                fontWeight: 600,
+                padding: '2px 10px',
+                cursor: regenerating ? 'not-allowed' : 'pointer',
+              }}
+            >
+              {regenerating ? 'Queued…' : 'Regenerate'}
+            </button>
+            {regenStarted && !regenerating && (
+              <span style={{ fontSize: 11, color: '#4ade80' }}>Started — refresh in ~30s</span>
+            )}
+            {regenError && (
+              <span style={{ fontSize: 11, color: '#f87171' }}>
+                {(regenError as Error).message}
+              </span>
+            )}
+          </div>
+
+          {/* Content */}
+          <div style={{ flex: 1, overflow: 'auto', padding: '8px 14px' }}>
+            {kfLoading ? (
+              <span style={{ color: '#9090a8', fontSize: 12 }}>Loading…</span>
+            ) : kf?.content ? (
+              <pre
+                style={{
+                  margin: 0,
+                  fontFamily: 'ui-monospace, Consolas, monospace',
+                  fontSize: 11,
+                  color: '#c0c0d8',
+                  lineHeight: 1.6,
+                  whiteSpace: 'pre-wrap',
+                  wordBreak: 'break-word',
+                }}
+              >
+                {kf.content}
+              </pre>
+            ) : (
+              <div style={{ color: '#9090a8', fontSize: 12 }}>
+                File is empty. Click <strong style={{ color: '#7c6af7' }}>Regenerate</strong> to
+                generate it from the knowledge graph using the configured LLM.
+              </div>
+            )}
+          </div>
+        </div>
+      )}
 
       <div style={{ flex: 1, position: 'relative', overflow: 'hidden' }}>
         {isLoading ? (

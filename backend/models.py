@@ -211,3 +211,10 @@ class ConfigUpdateRequest(BaseModel):
     llm_provider: str
     llm_model: str
     llm_api_key: str = ""
+
+
+class KnowledgeFileResponse(BaseModel):
+    content: str
+    path: str
+    size_bytes: int
+    enricher_enabled: bool

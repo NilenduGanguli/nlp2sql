@@ -6,6 +6,8 @@ interface GraphControlsProps {
   tableSearch: string
   onTableSearchChange: (s: string) => void
   onReset: () => void
+  showKnowledge: boolean
+  onToggleKnowledge: () => void
 }
 
 export const GraphControls: React.FC<GraphControlsProps> = ({
@@ -14,6 +16,8 @@ export const GraphControls: React.FC<GraphControlsProps> = ({
   tableSearch,
   onTableSearchChange,
   onReset,
+  showKnowledge,
+  onToggleKnowledge,
 }) => {
   return (
     <div
@@ -80,6 +84,23 @@ export const GraphControls: React.FC<GraphControlsProps> = ({
         />
         <span style={{ fontSize: 11, color: '#c0c0d8', minWidth: 28 }}>{limit}</span>
       </div>
+
+      {/* Knowledge file toggle */}
+      <button
+        onClick={onToggleKnowledge}
+        style={{
+          padding: '3px 10px',
+          background: showKnowledge ? 'rgba(124,106,247,0.2)' : 'none',
+          border: `1px solid ${showKnowledge ? '#7c6af7' : '#3a3a5c'}`,
+          borderRadius: 4,
+          color: showKnowledge ? '#7c6af7' : '#9090a8',
+          fontSize: 11,
+          fontWeight: showKnowledge ? 600 : 400,
+          cursor: 'pointer',
+        }}
+      >
+        Knowledge File
+      </button>
 
       {/* Reset button */}
       <button

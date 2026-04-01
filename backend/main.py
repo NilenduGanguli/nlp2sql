@@ -122,6 +122,9 @@ async def _background_tasks(app: FastAPI) -> None:
             )
             if ok:
                 logger.info("Knowledge file generated: %s", knowledge_file)
+                # Clear the LRU cache so the next build reads the new content
+                from agent.nodes.query_enricher import _load_knowledge
+                _load_knowledge.cache_clear()
                 # Rebuild pipeline so enricher reads fresh file
                 from agent.pipeline import build_pipeline
                 state.pipeline = await anyio.to_thread.run_sync(

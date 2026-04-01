@@ -2,12 +2,6 @@ import React, { useRef, useMemo } from 'react'
 import { useVirtualizer } from '@tanstack/react-virtual'
 import type { TableSummary } from '../../types'
 
-const TIER_COLORS: Record<string, { bg: string; text: string }> = {
-  core: { bg: 'rgba(124,106,247,0.2)', text: '#7c6af7' },
-  reference: { bg: 'rgba(74,222,128,0.15)', text: '#4ade80' },
-  audit: { bg: 'rgba(251,191,36,0.15)', text: '#fbbf24' },
-  utility: { bg: 'rgba(144,144,168,0.15)', text: '#9090a8' },
-}
 
 interface TableListProps {
   tables: TableSummary[]
@@ -49,10 +43,6 @@ export const TableList: React.FC<TableListProps> = ({ tables, selectedFqn, onSel
         {virtualizer.getVirtualItems().map((vItem) => {
           const table = tables[vItem.index]
           const isSelected = table.fqn === selectedFqn
-          const tierStyle = TIER_COLORS[table.importance_tier ?? ''] ?? {
-            bg: 'transparent',
-            text: '#9090a8',
-          }
 
           return (
             <div
@@ -142,22 +132,6 @@ export const TableList: React.FC<TableListProps> = ({ tables, selectedFqn, onSel
 
                 {/* Right: badges */}
                 <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 3, flexShrink: 0 }}>
-                  {table.importance_tier && (
-                    <span
-                      style={{
-                        fontSize: 9,
-                        fontWeight: 700,
-                        color: tierStyle.text,
-                        background: tierStyle.bg,
-                        borderRadius: 3,
-                        padding: '1px 5px',
-                        textTransform: 'uppercase',
-                        letterSpacing: '0.06em',
-                      }}
-                    >
-                      {table.importance_tier}
-                    </span>
-                  )}
                   <span style={{ fontSize: 10, color: '#9090a8' }}>
                     {table.column_count} cols
                     {table.row_count != null && (
