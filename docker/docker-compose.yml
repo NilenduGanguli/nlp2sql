@@ -2,22 +2,14 @@
 # KnowledgeQL — Full-Stack Docker Compose
 #
 # Services:
-#   oracle   — Oracle Free 23c database (gvenzl/oracle-free)
-#   backend  — KnowledgeQL FastAPI backend (port 8000)
-#   frontend — React app served by nginx (port 3000), proxies /api → backend
+#   oracle  — Oracle Free 23c database (gvenzl/oracle-free)
+#   backend — KnowledgeQL FastAPI backend; serves React SPA + /api/* (port 8000)
 #
 # Usage:
 #   docker compose -f docker/docker-compose.yml up              # full stack
 #   docker compose -f docker/docker-compose.yml up oracle       # DB only
-#   docker compose -f docker/docker-compose.yml up backend      # backend only
 #   docker compose -f docker/docker-compose.yml logs -f backend # tail logs
 #   docker compose -f docker/docker-compose.yml down -v         # teardown
-#
-# Startup sequence (backend):
-#   1. Wait for Oracle to be healthy
-#   2. Ensure schema exists (runs DDL + seed data if needed)
-#   3. Build knowledge graph from Oracle — or load from cache
-#   4. Start FastAPI/uvicorn on :8000
 # =============================================================================
 
 services:
@@ -42,10 +34,10 @@ services:
       retries: 15
       start_period: 120s
 
-  # ── KnowledgeQL FastAPI Backend ─────────────────────────────────────────────
+  # ── KnowledgeQL FastAPI Backend (also serves React SPA) ─────────────────────
   backend:
     build:
-      context: ..            # project root (Dockerfile.backend lives there)
+      context: ..            # project root
       dockerfile: Dockerfile.backend
     image: knowledgeql-backend:latest
     container_name: nlp2sql_backend
@@ -75,21 +67,7 @@ services:
       - graph_cache_data:/data/graph_cache
     restart: on-failure:3
 
-  # ── React Frontend (nginx) ───────────────────────────────────────────────────
-  frontend:
-    build:
-      context: ..
-      dockerfile: Dockerfile.frontend
-    image: knowledgeql-frontend:latest
-    container_name: nlp2sql_frontend
-    depends_on:
-      - backend
-    ports:
-      - "3000:3000"
-    restart: on-failure:3
-
 volumes:
   oracle_data:
-  # Persists the serialised knowledge graph across container restarts.
-  # Mount path: /data/graph_cache inside the backend container.
   graph_cache_data:
+

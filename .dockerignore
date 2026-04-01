@@ -2,6 +2,11 @@
 .git
 .gitignore
 
+# Node / frontend build artifacts
+frontend/node_modules
+frontend/.next
+frontend/dist
+
 # Python cache
 __pycache__
 *.pyc

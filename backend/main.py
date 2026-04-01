@@ -16,11 +16,14 @@ import asyncio
 import logging
 import os
 from contextlib import asynccontextmanager
+from pathlib import Path
 from typing import Optional
 
 import anyio
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 
 from app_config import AppConfig
 from knowledge_graph.graph_cache import (
@@ -209,3 +212,23 @@ app.include_router(sql.router, prefix="/api")
 app.include_router(schema.router, prefix="/api")
 app.include_router(graph_router.router, prefix="/api")
 app.include_router(admin.router, prefix="/api")
+
+# ---------------------------------------------------------------------------
+# Static file serving — React SPA (must come AFTER all API routers)
+# ---------------------------------------------------------------------------
+
+_DIST = Path(__file__).resolve().parent.parent / "dist"
+
+if _DIST.is_dir():
+    # Mount /assets with long-cache headers for hashed JS/CSS bundles
+    _assets = _DIST / "assets"
+    if _assets.is_dir():
+        app.mount("/assets", StaticFiles(directory=_assets), name="assets")
+
+    @app.get("/{full_path:path}", include_in_schema=False)
+    async def _spa_fallback(full_path: str):
+        """Serve existing files verbatim; everything else → index.html (SPA routing)."""
+        candidate = _DIST / full_path
+        if candidate.is_file():
+            return FileResponse(candidate)
+        return FileResponse(_DIST / "index.html")
