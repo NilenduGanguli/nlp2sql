@@ -40,6 +40,45 @@ _FK_COLUMN_SUFFIXES = ("_ID", "_CODE", "_KEY", "_FK", "_NUM", "_NO", "_REF")
 
 
 # ---------------------------------------------------------------------------
+# Robust JSON extractor — handles Gemini thinking tags, trailing commas, fences
+# ---------------------------------------------------------------------------
+
+def _parse_json_robust(content: str) -> Any:
+    """
+    Extract and parse a JSON object from an LLM response, tolerating:
+    - <thinking>...</thinking> blocks (Gemini 2.5 Pro with thinking budget > 0)
+    - Markdown code fences (```json ... ```)
+    - Trailing commas before ] or } (common LLM formatting mistake)
+    - Prose before/after the JSON object
+    """
+    # 1. Strip thinking tags emitted by Gemini 2.5 Pro
+    content = re.sub(r"<thinking>[\s\S]*?</thinking>", "", content, flags=re.IGNORECASE)
+
+    # 2. Try to extract from a markdown code fence first
+    fence_match = re.search(r"```(?:json)?\s*([\s\S]*?)```", content, re.IGNORECASE)
+    candidate = fence_match.group(1).strip() if fence_match else content
+
+    # 3. Find the outermost JSON object boundaries
+    obj_match = re.search(r"\{[\s\S]*\}", candidate)
+    if not obj_match:
+        raise ValueError("No JSON object found in LLM response")
+    raw = obj_match.group()
+
+    # 4. Remove trailing commas before } or ] (e.g. [...,] or {...,})
+    raw = re.sub(r",\s*([\]}])", r"\1", raw)
+
+    # 5. Parse — let JSONDecodeError propagate with the cleaned text for debugging
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError as exc:
+        # Last-ditch: try the original candidate (sometimes the regex trims valid JSON)
+        try:
+            return json.loads(re.sub(r",\s*([\]}])", r"\1", candidate))
+        except json.JSONDecodeError:
+            raise exc  # raise the original error with position info
+
+
+# ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
 
@@ -173,17 +212,15 @@ Return ALL {len(batch)} tables ranked. rank must start from {global_offset + 1}.
                 HumanMessage(content=user_msg),
             ])
             content = response.content if hasattr(response, "content") else str(response)
-            json_match = re.search(r"\{[\s\S]*\}", content)
-            if json_match:
-                parsed = json.loads(json_match.group())
-                for item in parsed.get("rankings", []):
-                    fqn = item.get("fqn", "")
-                    if fqn:
-                        all_rankings[fqn] = {
-                            "rank": int(item.get("rank", global_offset + 999)),
-                            "tier": item.get("tier", "utility"),
-                            "reason": item.get("reason", ""),
-                        }
+            parsed = _parse_json_robust(content)
+            for item in parsed.get("rankings", []):
+                fqn = item.get("fqn", "")
+                if fqn:
+                    all_rankings[fqn] = {
+                        "rank": int(item.get("rank", global_offset + 999)),
+                        "tier": item.get("tier", "utility"),
+                        "reason": item.get("reason", ""),
+                    }
         except Exception as exc:
             logger.warning("LLM ranking batch failed: %s", exc)
 
@@ -329,10 +366,7 @@ Respond ONLY with valid JSON:
                 HumanMessage(content=user_msg),
             ])
             content = response.content if hasattr(response, "content") else str(response)
-            json_match = re.search(r"\{[\s\S]*\}", content)
-            if not json_match:
-                continue
-            parsed = json.loads(json_match.group())
+            parsed = _parse_json_robust(content)
 
             for inferred in parsed.get("inferred_fks", []):
                 confidence = inferred.get("confidence", "low").lower()
@@ -460,10 +494,7 @@ Return ALL {len(batch)} tables. Keep each description under 120 characters."""
                 HumanMessage(content=user_msg),
             ])
             content = response.content if hasattr(response, "content") else str(response)
-            json_match = re.search(r"\{[\s\S]*\}", content)
-            if not json_match:
-                continue
-            parsed = json.loads(json_match.group())
+            parsed = _parse_json_robust(content)
             for item in parsed.get("descriptions", []):
                 fqn = item.get("fqn", "")
                 desc = item.get("description", "").strip()

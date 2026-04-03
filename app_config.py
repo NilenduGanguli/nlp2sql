@@ -41,6 +41,8 @@ try:
         # --- Vertex AI (uses Application Default Credentials, no API key) ---
         vertex_project: str = Field(default="", validation_alias="VERTEX_PROJECT")
         vertex_location: str = Field(default="us-central1", validation_alias="VERTEX_LOCATION")
+        # Thinking budget for Gemini 2.5 Pro. 0 = disabled, max = 32768.
+        vertex_thinking_budget: int = Field(default=8192, validation_alias="VERTEX_THINKING_BUDGET")
 
         # --- Query execution limits ---
         max_result_rows: int = Field(
@@ -113,6 +115,9 @@ except ImportError:
             # Vertex AI — Application Default Credentials, no API key required
             self.vertex_project = kwargs.get("vertex_project", os.getenv("VERTEX_PROJECT", ""))
             self.vertex_location = kwargs.get("vertex_location", os.getenv("VERTEX_LOCATION", "us-central1"))
+            self.vertex_thinking_budget = int(kwargs.get(
+                "vertex_thinking_budget", os.getenv("VERTEX_THINKING_BUDGET", "8192")
+            ))
             self.max_result_rows = int(
                 kwargs.get("max_result_rows", os.getenv("MAX_RESULT_ROWS", "10000"))
             )

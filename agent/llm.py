@@ -175,9 +175,13 @@ def get_llm(config):
                 "Install with: pip install google-genai"
             ) from exc
 
-        model_name = config.llm_model or "gemini-2.5-flash"
+        model_name = config.llm_model or "gemini-2.5-pro"
         project = getattr(config, "vertex_project", None) or os.getenv("VERTEX_PROJECT", "")
         location = getattr(config, "vertex_location", None) or os.getenv("VERTEX_LOCATION", "us-central1")
+        thinking_budget = int(
+            getattr(config, "vertex_thinking_budget", None)
+            or os.getenv("VERTEX_THINKING_BUDGET", "8192")
+        )
 
         # Credentials are optional — omit GOOGLE_APPLICATION_CREDENTIALS when
         # using an org proxy that handles auth transparently.
@@ -219,8 +223,8 @@ def get_llm(config):
             ttl_seconds=14 * 60,
             model=model_name,
             temperature=0.0,
-            max_output_tokens=4096,
-            thinking_budget=0,
+            max_output_tokens=8192,
+            thinking_budget=thinking_budget,
         )
 
     # ── OpenAI (default) ──────────────────────────────────────────────────────

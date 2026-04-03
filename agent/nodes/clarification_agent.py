@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from typing import Any, Dict, List
 
 logger = logging.getLogger(__name__)
@@ -120,12 +121,13 @@ def make_clarification_agent(llm):
                 else str(response).strip()
             )
 
-            # Strip markdown code fences if the model adds them despite instructions
-            if "```" in raw:
-                parts = raw.split("```")
-                raw = parts[1] if len(parts) >= 2 else raw
-                if raw.lstrip().startswith("json"):
-                    raw = raw.lstrip()[4:]
+            # Normalise: strip thinking tags, code fences, trailing commas
+            raw = re.sub(r"<thinking>[\s\S]*?</thinking>", "", raw, flags=re.IGNORECASE)
+            fence = re.search(r"```(?:json)?\s*([\s\S]*?)```", raw, re.IGNORECASE)
+            raw = fence.group(1).strip() if fence else raw
+            obj = re.search(r"\{[\s\S]*\}", raw)
+            raw = obj.group() if obj else raw
+            raw = re.sub(r",\s*([\]}])", r"\1", raw)
 
             result = json.loads(raw.strip())
 
