@@ -1,13 +1,19 @@
 import React from 'react'
 import type { ChatMessage } from '../../types'
 import { SqlResultCard } from './SqlResultCard'
+import { ClarificationCard } from './ClarificationCard'
 
 interface MessageBubbleProps {
   message: ChatMessage
   onOpenInEditor?: (sql: string) => void
+  onClarificationAnswer?: (messageId: string, answer: string) => void
 }
 
-export const MessageBubble: React.FC<MessageBubbleProps> = ({ message, onOpenInEditor }) => {
+export const MessageBubble: React.FC<MessageBubbleProps> = ({
+  message,
+  onOpenInEditor,
+  onClarificationAnswer,
+}) => {
   if (message.type === 'user') {
     return (
       <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: 12 }}>
@@ -47,6 +53,19 @@ export const MessageBubble: React.FC<MessageBubbleProps> = ({ message, onOpenInE
           <span style={{ fontWeight: 600, marginRight: 6 }}>Error:</span>
           {message.content}
         </div>
+      </div>
+    )
+  }
+
+  if (message.type === 'clarification') {
+    return (
+      <div style={{ marginBottom: 12 }}>
+        <ClarificationCard
+          question={message.question ?? message.content}
+          options={message.options ?? []}
+          answered={message.answered}
+          onAnswer={(answer) => onClarificationAnswer?.(message.id, answer)}
+        />
       </div>
     )
   }

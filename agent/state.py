@@ -108,3 +108,13 @@ class AgentState(TypedDict):
 
     retry_count: int
     """Number of times the sql_generator has been called (for retry logic)."""
+
+    # --------------------------------------------------------- Clarification
+    need_clarification: bool
+    """True when the clarification agent determined the query is ambiguous."""
+
+    clarification_question: str
+    """The question posed to the user when need_clarification is True."""
+
+    clarification_options: List[str]
+    """Suggested answer options (empty list = open-ended)."""

@@ -5,12 +5,16 @@ import { ChatPage } from './pages/ChatPage'
 import { EditorPage } from './pages/EditorPage'
 import { GraphPage } from './pages/GraphPage'
 import { RelationshipsPage } from './pages/RelationshipsPage'
+import { HistoryPage } from './pages/HistoryPage'
 import { SchemaTab } from './components/schema/SchemaTab'
+import { useChatStore } from './store/chatStore'
+import type { ChatSession } from './types'
 
 export default function App() {
   const [activeTab, setActiveTab] = useState<TabId>('chat')
   const [editorSql, setEditorSql] = useState('')
   const [selectedSchemaTable, setSelectedSchemaTable] = useState<string | null>(null)
+  const { restoreSession } = useChatStore()
 
   const handleOpenInEditor = (sql: string) => {
     setEditorSql(sql)
@@ -20,6 +24,11 @@ export default function App() {
   const handleTableSelect = (fqn: string) => {
     setSelectedSchemaTable(fqn)
     setActiveTab('schema')
+  }
+
+  const handleResumeSession = (session: ChatSession) => {
+    restoreSession(session.messages, session.history)
+    setActiveTab('chat')
   }
 
   return (
@@ -73,6 +82,16 @@ export default function App() {
         }}
       >
         <RelationshipsPage />
+      </div>
+
+      <div
+        style={{
+          display: activeTab === 'history' ? 'flex' : 'none',
+          flexDirection: 'column',
+          height: '100%',
+        }}
+      >
+        <HistoryPage onResume={handleResumeSession} />
       </div>
     </AppShell>
   )

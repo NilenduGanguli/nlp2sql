@@ -115,14 +115,25 @@ export interface QueryResult {
   validation_errors: string[]
 }
 
-export type ChatMessageType = 'user' | 'result' | 'error'
+export type ChatMessageType = 'user' | 'result' | 'error' | 'clarification'
 
 export interface ChatMessage {
   id: string
   type: ChatMessageType
   content: string
   result?: QueryResult
+  question?: string      // clarification question text
+  options?: string[]     // clarification answer options
+  answered?: boolean     // true once the user has responded
   timestamp: Date
+}
+
+export interface ChatSession {
+  id: string
+  title: string           // first user message, truncated
+  createdAt: string       // ISO string (serializable for localStorage)
+  messages: ChatMessage[]
+  history: ConversationMessage[]
 }
 
 // ──────────────────────────────────────────────────────────
@@ -154,6 +165,19 @@ export interface GraphNode {
   comments: string | null
 }
 
+export interface JoinColumnDetail {
+  from_col: string
+  to_col: string
+  from_col_fqn: string
+  to_col_fqn: string
+  from_col_type: string | null
+  to_col_type: string | null
+  from_col_comments: string | null
+  to_col_comments: string | null
+  constraint_name: string
+  on_delete_action: string
+}
+
 export interface GraphEdge {
   id: string
   from_id: string
@@ -161,6 +185,9 @@ export interface GraphEdge {
   rel_type: string
   weight: number
   source: string
+  join_columns: JoinColumnDetail[]
+  join_type: string | null
+  cardinality: string | null
 }
 
 export interface GraphVisualization {

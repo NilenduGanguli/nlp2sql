@@ -1,7 +1,7 @@
 import React, { useState } from 'react'
 import { Sidebar } from './Sidebar'
 
-export type TabId = 'chat' | 'editor' | 'schema' | 'graph' | 'relationships'
+export type TabId = 'chat' | 'editor' | 'schema' | 'graph' | 'relationships' | 'history'
 
 interface AppShellProps {
   activeTab: TabId
@@ -17,6 +17,7 @@ const TAB_LABELS: Record<TabId, string> = {
   schema: 'Schema',
   graph: 'Knowledge Graph',
   relationships: 'Relationships',
+  history: 'History',
 }
 
 export const AppShell: React.FC<AppShellProps> = ({

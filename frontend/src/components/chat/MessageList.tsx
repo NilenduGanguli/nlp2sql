@@ -5,13 +5,19 @@ import { MessageBubble } from './MessageBubble'
 interface MessageListProps {
   messages: ChatMessage[]
   onOpenInEditor?: (sql: string) => void
+  onClarificationAnswer?: (messageId: string, answer: string) => void
 }
 
-export const MessageList: React.FC<MessageListProps> = ({ messages, onOpenInEditor }) => {
-  const bottomRef = useRef<HTMLDivElement>(null)
+export const MessageList: React.FC<MessageListProps> = ({
+  messages,
+  onOpenInEditor,
+  onClarificationAnswer,
+}) => {
+  const containerRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
+    const el = containerRef.current
+    if (el) el.scrollTop = el.scrollHeight
   }, [messages])
 
   if (messages.length === 0) {
@@ -32,11 +38,15 @@ export const MessageList: React.FC<MessageListProps> = ({ messages, onOpenInEdit
   }
 
   return (
-    <div style={{ flex: 1, overflowY: 'auto', padding: '16px 20px 8px' }}>
+    <div ref={containerRef} style={{ flex: 1, overflowY: 'auto', padding: '16px 20px 8px' }}>
       {messages.map((msg) => (
-        <MessageBubble key={msg.id} message={msg} onOpenInEditor={onOpenInEditor} />
+        <MessageBubble
+          key={msg.id}
+          message={msg}
+          onOpenInEditor={onOpenInEditor}
+          onClarificationAnswer={onClarificationAnswer}
+        />
       ))}
-      <div ref={bottomRef} />
     </div>
   )
 }

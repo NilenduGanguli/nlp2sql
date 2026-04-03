@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import logging
 import os
+import time
 from typing import Any, Iterator, List, Optional
 
 from langchain_core.language_models.chat_models import BaseChatModel
@@ -36,9 +37,15 @@ class _VertexGenAIChat(BaseChatModel):
     Using client.models.generate_content() instead of LangChain's own Google
     wrappers makes this work with org proxies where those wrappers force
     credential patterns that don't apply.
+
+    The underlying genai.Client is recreated every `ttl_seconds` (default 14 min)
+    so that proxy-managed auth tokens are always fresh.
     """
 
-    _client: Any = PrivateAttr()
+    _client: Any = PrivateAttr(default=None)
+    _client_created: float = PrivateAttr(default=0.0)
+    _client_factory: Any = PrivateAttr()
+    _ttl: int = PrivateAttr(default=14 * 60)
     model: str
     temperature: float = 0.0
     max_output_tokens: int = 4096
@@ -46,9 +53,21 @@ class _VertexGenAIChat(BaseChatModel):
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
-    def __init__(self, *, client: Any, **kwargs: Any) -> None:
+    def __init__(self, *, client_factory: Any, ttl_seconds: int = 14 * 60, **kwargs: Any) -> None:
         super().__init__(**kwargs)
-        self._client = client
+        self._client_factory = client_factory
+        self._ttl = ttl_seconds
+        # Eagerly create the first client so the first query is not slower
+        self._client = client_factory()
+        self._client_created = time.monotonic()
+
+    def _get_client(self) -> Any:
+        """Return the current client, rebuilding it if the TTL has expired."""
+        if time.monotonic() - self._client_created > self._ttl:
+            self._client = self._client_factory()
+            self._client_created = time.monotonic()
+            logger.info("Vertex AI genai.Client refreshed (TTL=%ds)", self._ttl)
+        return self._client
 
     @property
     def _llm_type(self) -> str:
@@ -86,7 +105,8 @@ class _VertexGenAIChat(BaseChatModel):
         if system_text:
             cfg.system_instruction = system_text
 
-        response = self._client.models.generate_content(
+        client = self._get_client()
+        response = client.models.generate_content(
             model=self.model,
             contents=contents,
             config=cfg,
@@ -179,18 +199,24 @@ def get_llm(config):
         else:
             logger.info("Vertex AI: no GOOGLE_APPLICATION_CREDENTIALS — using proxy/ADC")
 
-        client = genai.Client(
-            vertexai=True,
-            project=project or None,
-            location=location,
-            credentials=credentials,
-        )
+        # Capture locals in the factory closure so each refresh uses the same config
+        _project, _location, _credentials = project, location, credentials
+
+        def _make_client() -> Any:
+            return genai.Client(
+                vertexai=True,
+                project=_project or None,
+                location=_location,
+                credentials=_credentials,
+            )
+
         logger.info(
-            "genai.Client initialised: project=%s, location=%s, model=%s",
+            "Vertex AI configured: project=%s, location=%s, model=%s, client_ttl=14min",
             project or "(default)", location, model_name,
         )
         return _VertexGenAIChat(
-            client=client,
+            client_factory=_make_client,
+            ttl_seconds=14 * 60,
             model=model_name,
             temperature=0.0,
             max_output_tokens=4096,

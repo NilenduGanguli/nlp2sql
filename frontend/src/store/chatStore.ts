@@ -7,6 +7,10 @@ interface ChatStore {
   addUserMessage(content: string): void
   addResultMessage(result: QueryResult): void
   addErrorMessage(content: string): void
+  addClarificationMessage(question: string, options: string[]): void
+  markClarificationAnswered(id: string): void
+  /** Replace current chat with a saved session. */
+  restoreSession(messages: ChatMessage[], history: ConversationMessage[]): void
   clearMessages(): void
 }
 
@@ -47,5 +51,35 @@ export const useChatStore = create<ChatStore>((set) => ({
       ],
     })),
 
+  addClarificationMessage: (question, options) =>
+    set((state) => ({
+      messages: [
+        ...state.messages,
+        {
+          id: makeId(),
+          type: 'clarification',
+          content: question,
+          question,
+          options,
+          answered: false,
+          timestamp: new Date(),
+        },
+      ],
+      // Add to history so follow-up knows this Q was asked
+      history: [
+        ...state.history,
+        { role: 'assistant' as const, content: question },
+      ].slice(-20),
+    })),
+
+  markClarificationAnswered: (id) =>
+    set((state) => ({
+      messages: state.messages.map((m) =>
+        m.id === id ? { ...m, answered: true } : m,
+      ),
+    })),
+
   clearMessages: () => set({ messages: [], history: [] }),
+
+  restoreSession: (messages, history) => set({ messages, history }),
 }))

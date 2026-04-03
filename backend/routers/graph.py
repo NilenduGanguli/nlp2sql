@@ -8,7 +8,7 @@ from fastapi import APIRouter, Depends, Query
 
 from backend.deps import get_graph
 from backend.models import (
-    ForeignKeyEdge, GraphEdge, GraphNode, GraphVisualization, JoinPathResult,
+    ForeignKeyEdge, GraphEdge, GraphNode, GraphVisualization, JoinColumnDetail, JoinPathResult,
 )
 from knowledge_graph.traversal import find_join_path
 
@@ -52,6 +52,13 @@ async def get_visualization(
             comments=t.get("llm_description") or t.get("comments"),
         ))
 
+    # Build FK lookup: (src_col_fqn, tgt_col_fqn) → FK edge props
+    # so we can attach constraint names / on-delete actions to each join column pair
+    fk_lookup: dict = {}
+    for fk in graph.get_all_edges("HAS_FOREIGN_KEY"):
+        key = (fk.get("_from", ""), fk.get("_to", ""))
+        fk_lookup[key] = fk
+
     # Only include edges between selected nodes
     edges: List[GraphEdge] = []
     seen_pairs: set = set()
@@ -62,6 +69,35 @@ async def get_visualization(
             pair = tuple(sorted([src, tgt]))
             if pair not in seen_pairs:
                 seen_pairs.add(pair)
+
+                # Resolve join column details
+                raw_cols = jp.get("join_columns", [])
+                join_col_details: List[JoinColumnDetail] = []
+                for jc in raw_cols:
+                    if not isinstance(jc, dict):
+                        continue
+                    src_fqn = jc.get("src") or jc.get("from_col") or jc.get("col", "")
+                    tgt_fqn = jc.get("tgt") or jc.get("to_col") or jc.get("ref_col", "")
+                    if not src_fqn or not tgt_fqn:
+                        continue
+
+                    src_node = graph.get_node("Column", src_fqn) or {}
+                    tgt_node = graph.get_node("Column", tgt_fqn) or {}
+                    fk_props = fk_lookup.get((src_fqn, tgt_fqn)) or {}
+
+                    join_col_details.append(JoinColumnDetail(
+                        from_col=src_node.get("name") or src_fqn.split(".")[-1],
+                        to_col=tgt_node.get("name") or tgt_fqn.split(".")[-1],
+                        from_col_fqn=src_fqn,
+                        to_col_fqn=tgt_fqn,
+                        from_col_type=src_node.get("data_type"),
+                        to_col_type=tgt_node.get("data_type"),
+                        from_col_comments=src_node.get("comments") or None,
+                        to_col_comments=tgt_node.get("comments") or None,
+                        constraint_name=fk_props.get("constraint_name", ""),
+                        on_delete_action=fk_props.get("on_delete_action", ""),
+                    ))
+
                 edges.append(GraphEdge(
                     id=f"{src}--{tgt}",
                     from_id=src,
@@ -69,6 +105,9 @@ async def get_visualization(
                     rel_type="JOIN_PATH",
                     weight=jp.get("weight", 1.0),
                     source=jp.get("source", "precomputed"),
+                    join_columns=join_col_details,
+                    join_type=jp.get("join_type"),
+                    cardinality=jp.get("cardinality"),
                 ))
 
     return GraphVisualization(

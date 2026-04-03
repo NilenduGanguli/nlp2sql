@@ -1,5 +1,6 @@
 import React, { useState, useRef, useCallback } from 'react'
 import { useChatStore } from '../../store/chatStore'
+import { useChatHistoryStore } from '../../store/chatHistoryStore'
 import { streamQuery } from '../../api/query'
 import { MessageList } from './MessageList'
 import { StreamingIndicator } from './StreamingIndicator'
@@ -17,47 +18,66 @@ interface ChatPanelProps {
 }
 
 export const ChatPanel: React.FC<ChatPanelProps> = ({ onOpenInEditor }) => {
-  const { messages, history, addUserMessage, addResultMessage, addErrorMessage } = useChatStore()
+  const {
+    messages,
+    history,
+    addUserMessage,
+    addResultMessage,
+    addErrorMessage,
+    addClarificationMessage,
+    markClarificationAnswered,
+    clearMessages,
+  } = useChatStore()
+  const { saveSession } = useChatHistoryStore()
   const [input, setInput] = useState('')
   const [isStreaming, setIsStreaming] = useState(false)
   const [completedSteps, setCompletedSteps] = useState<QueryStep[]>([])
   const abortRef = useRef<AbortController | null>(null)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
 
+  /** Core submit: accepts explicit content so clarification answers can bypass the input field. */
+  const handleSubmitContent = useCallback(
+    async (content: string) => {
+      if (!content.trim() || isStreaming) return
+
+      const historySnapshot = [...history]
+      setInput('')
+      setIsStreaming(true)
+      setCompletedSteps([])
+      addUserMessage(content)
+
+      abortRef.current = streamQuery(
+        content,
+        historySnapshot,
+        (step) => setCompletedSteps((prev) => (prev.includes(step) ? prev : [...prev, step])),
+        (_sql) => {
+          // sql preview — not shown separately in chat
+        },
+        (result) => {
+          addResultMessage(result)
+          setIsStreaming(false)
+          setCompletedSteps([])
+        },
+        (errMsg) => {
+          addErrorMessage(errMsg)
+          setIsStreaming(false)
+          setCompletedSteps([])
+        },
+        (question, options) => {
+          // Agent is asking for clarification — show card, stop streaming indicator
+          addClarificationMessage(question, options)
+          setIsStreaming(false)
+          setCompletedSteps([])
+        },
+      )
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [isStreaming, history],
+  )
+
   const handleSubmit = useCallback(async () => {
-    const content = input.trim()
-    if (!content || isStreaming) return
-
-    // Snapshot history before current message (backend expects prior context only)
-    const historySnapshot = [...history]
-
-    setInput('')
-    setIsStreaming(true)
-    setCompletedSteps([])
-
-    addUserMessage(content)
-
-    abortRef.current = streamQuery(
-      content,
-      historySnapshot,
-      (step) => {
-        setCompletedSteps((prev) => (prev.includes(step) ? prev : [...prev, step]))
-      },
-      (_sql) => {
-        // sql preview - not shown separately in chat
-      },
-      (result) => {
-        addResultMessage(result)
-        setIsStreaming(false)
-        setCompletedSteps([])
-      },
-      (errMsg) => {
-        addErrorMessage(errMsg)
-        setIsStreaming(false)
-        setCompletedSteps([])
-      },
-    )
-  }, [input, isStreaming, history, addUserMessage, addResultMessage, addErrorMessage])
+    await handleSubmitContent(input.trim())
+  }, [input, handleSubmitContent])
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key === 'Enter' && !e.shiftKey) {
@@ -77,6 +97,21 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ onOpenInEditor }) => {
     setCompletedSteps([])
   }
 
+  /** Called when the user picks an answer from a ClarificationCard. */
+  const handleClarificationAnswer = useCallback(
+    (messageId: string, answer: string) => {
+      markClarificationAnswered(messageId)
+      void handleSubmitContent(answer)
+    },
+    [markClarificationAnswered, handleSubmitContent],
+  )
+
+  /** Save current chat to history and start fresh. */
+  const handleNewChat = useCallback(() => {
+    if (messages.length > 0) saveSession(messages, history)
+    clearMessages()
+  }, [messages, history, saveSession, clearMessages])
+
   return (
     <div
       style={{
@@ -86,6 +121,42 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ onOpenInEditor }) => {
         overflow: 'hidden',
       }}
     >
+      {/* Chat header with New Chat button */}
+      <div
+        style={{
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+          padding: '8px 16px',
+          borderBottom: '1px solid #2a2a3e',
+          background: '#1e1e2e',
+          flexShrink: 0,
+        }}
+      >
+        <span style={{ fontSize: 12, fontWeight: 500, color: '#6a6a8a' }}>
+          {messages.length === 0
+            ? 'New conversation'
+            : `${messages.filter((m) => m.type === 'user').length} message${messages.filter((m) => m.type === 'user').length !== 1 ? 's' : ''}`}
+        </span>
+        <button
+          onClick={handleNewChat}
+          disabled={isStreaming}
+          title="Save this chat and start a new one"
+          style={{
+            padding: '4px 12px',
+            background: messages.length > 0 ? 'rgba(124,106,247,0.12)' : 'none',
+            border: `1px solid ${messages.length > 0 ? 'rgba(124,106,247,0.3)' : '#2a2a3e'}`,
+            borderRadius: 6,
+            color: messages.length > 0 ? '#a5b4fc' : '#4a4a6a',
+            fontSize: 11,
+            fontWeight: 500,
+            cursor: messages.length > 0 && !isStreaming ? 'pointer' : 'default',
+            transition: 'all 0.15s',
+          }}
+        >
+          + New Chat
+        </button>
+      </div>
       {/* Suggested queries */}
       {messages.length === 0 && (
         <div
@@ -125,7 +196,11 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ onOpenInEditor }) => {
       )}
 
       {/* Message list */}
-      <MessageList messages={messages} onOpenInEditor={onOpenInEditor} />
+      <MessageList
+        messages={messages}
+        onOpenInEditor={onOpenInEditor}
+        onClarificationAnswer={handleClarificationAnswer}
+      />
 
       {/* Streaming indicator */}
       {isStreaming && (

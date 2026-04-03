@@ -122,13 +122,30 @@ class GraphNode(BaseModel):
     comments: Optional[str] = None
 
 
+class JoinColumnDetail(BaseModel):
+    from_col: str                       # short name, e.g. "CUSTOMER_ID"
+    to_col: str
+    from_col_fqn: str = ""             # fully-qualified, e.g. "KYC.ACCOUNTS.CUSTOMER_ID"
+    to_col_fqn: str = ""
+    from_col_type: Optional[str] = None
+    to_col_type: Optional[str] = None
+    from_col_comments: Optional[str] = None
+    to_col_comments: Optional[str] = None
+    constraint_name: str = ""
+    on_delete_action: str = ""
+
+
 class GraphEdge(BaseModel):
     id: str
     from_id: str
     to_id: str
     rel_type: str
     weight: float = 1.0
-    source: str = "precomputed"   # "precomputed" | "llm_inferred"
+    source: str = "precomputed"   # "precomputed" | "llm_inferred" | "fk_constraint"
+    # Rich join column details — populated for JOIN_PATH edges when FK info is available
+    join_columns: List[JoinColumnDetail] = []
+    join_type: Optional[str] = None
+    cardinality: Optional[str] = None
 
 
 class GraphVisualization(BaseModel):

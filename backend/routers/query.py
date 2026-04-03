@@ -56,6 +56,9 @@ def _build_initial_state(user_input: str, history: list) -> Dict[str, Any]:
         "step": "start",
         "error": None,
         "retry_count": 0,
+        "need_clarification": False,
+        "clarification_question": "",
+        "clarification_options": [],
     }
 
 
@@ -92,6 +95,20 @@ async def stream_query(
                         # is a no-op pass-through, not a real LLM call)
                         if node_name == "enrich_query" and not getattr(config, "query_enricher_enabled", True):
                             pass
+                        # Don't show a step badge for the clarification check node —
+                        # emit a clarification event instead when needed
+                        elif node_name == "check_clarification":
+                            if state.get("need_clarification"):
+                                loop.call_soon_threadsafe(
+                                    queue.put_nowait,
+                                    (
+                                        "clarification",
+                                        {
+                                            "question": state.get("clarification_question", ""),
+                                            "options": state.get("clarification_options", []),
+                                        },
+                                    ),
+                                )
                         else:
                             loop.call_soon_threadsafe(
                                 queue.put_nowait, ("step", {"step": step})
@@ -104,8 +121,12 @@ async def stream_query(
                                 ("sql", {"sql": state["generated_sql"]}),
                             )
 
-                    # Parse final formatted_response
-                    result = _parse_formatted_response(last_state)
+                    # Parse final formatted_response — but only if the pipeline
+                    # completed normally (not stopped for clarification)
+                    if not last_state.get("need_clarification"):
+                        result = _parse_formatted_response(last_state)
+                    else:
+                        result = None
                 else:
                     # _SequentialPipeline fallback (no LangGraph)
                     loop.call_soon_threadsafe(
@@ -114,7 +135,8 @@ async def stream_query(
                     final_state = pipeline.invoke(initial_state)
                     result = _parse_formatted_response(final_state)
 
-                loop.call_soon_threadsafe(queue.put_nowait, ("result", result))
+                if result is not None:
+                    loop.call_soon_threadsafe(queue.put_nowait, ("result", result))
 
             except Exception as exc:
                 logger.error("Pipeline error: %s", exc, exc_info=True)

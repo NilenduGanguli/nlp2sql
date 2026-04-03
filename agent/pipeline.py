@@ -38,6 +38,16 @@ def _default_enrich(state: Dict[str, Any]) -> Dict[str, Any]:
     return {**state, "enriched_query": state.get("user_input", ""), "step": "query_enriched"}
 
 
+def _default_clarify(state: Dict[str, Any]) -> Dict[str, Any]:
+    """Fallback clarification node (no LLM): skip clarification, proceed to SQL."""
+    return {
+        **state,
+        "need_clarification": False,
+        "clarification_question": "",
+        "clarification_options": [],
+    }
+
+
 
 # ---------------------------------------------------------------------------
 # Pipeline builder
@@ -95,17 +105,20 @@ def build_pipeline(graph, config, llm=None):
     entity_fn = None
     gen_fn = None
     enrich_fn = None
+    clarify_fn = None
     if llm:
         try:
             from agent.nodes import intent_classifier, entity_extractor, sql_generator
             from agent.nodes.query_enricher import make_query_enricher
+            from agent.nodes.clarification_agent import make_clarification_agent
             intent_fn = intent_classifier.make_intent_classifier(llm)
             entity_fn = entity_extractor.make_entity_extractor(llm, graph=graph)
             gen_fn = sql_generator.make_sql_generator(llm)
             enrich_fn = make_query_enricher(llm)
+            clarify_fn = make_clarification_agent(llm)
         except Exception as exc:
             logger.warning("LLM node setup failed: %s", exc)
-            intent_fn = entity_fn = gen_fn = enrich_fn = None
+            intent_fn = entity_fn = gen_fn = enrich_fn = clarify_fn = None
 
     # Build graph-aware no-LLM fallback nodes.
     # These close over `graph` so they search actual table names rather than
@@ -157,13 +170,10 @@ def build_pipeline(graph, config, llm=None):
             "step": "sql_generated",
         }
 
-    enrich_node = (
-        enrich_fn
-        if (enrich_fn and getattr(config, "query_enricher_enabled", True))
-        else _default_enrich
-    )
-    intent_node = intent_fn    if intent_fn    else _default_intent
-    entity_node = entity_fn    if entity_fn    else _graph_default_entities
+    enrich_node  = (enrich_fn if (enrich_fn and getattr(config, "query_enricher_enabled", True)) else _default_enrich)
+    clarify_node = clarify_fn if clarify_fn else _default_clarify
+    intent_node  = intent_fn    if intent_fn    else _default_intent
+    entity_node  = entity_fn    if entity_fn    else _graph_default_entities
     schema_node = context_builder.make_context_builder(graph)
     gen_node    = gen_fn       if gen_fn       else _graph_fallback_sql
     valid_node  = sql_validator.make_sql_validator()
@@ -209,14 +219,15 @@ def build_pipeline(graph, config, llm=None):
             return merged
 
         pipeline_nodes = [
-            ("enrich_query",    enrich_node),   # semantic enrichment — first step
-            ("classify_intent", intent_node),
-            ("extract_entities", entity_node),
-            ("retrieve_schema", schema_node),
+            ("enrich_query",        enrich_node),
+            ("classify_intent",     intent_node),
+            ("extract_entities",    entity_node),
+            ("retrieve_schema",     schema_node),
+            ("check_clarification", clarify_node),  # pass-through in sequential mode
             ("retry_loop", None),   # special marker handled above
-            ("optimize_sql", opt_node),
-            ("execute_query", exec_node),
-            ("format_result", format_node),
+            ("optimize_sql",        opt_node),
+            ("execute_query",       exec_node),
+            ("format_result",       format_node),
         ]
 
         logger.info("Sequential fallback pipeline ready (llm=%s)", "yes" if llm else "no")
@@ -229,21 +240,30 @@ def build_pipeline(graph, config, llm=None):
     from agent.state import AgentState
 
     workflow = StateGraph(AgentState)
-    workflow.add_node("enrich_query",    enrich_node)
-    workflow.add_node("classify_intent", intent_node)
-    workflow.add_node("extract_entities", entity_node)
-    workflow.add_node("retrieve_schema", schema_node)
-    workflow.add_node("generate_sql", gen_node)
-    workflow.add_node("validate_sql", valid_node)
-    workflow.add_node("optimize_sql", opt_node)
-    workflow.add_node("execute_query", exec_node)
-    workflow.add_node("format_result", format_node)
+    workflow.add_node("enrich_query",        enrich_node)
+    workflow.add_node("classify_intent",     intent_node)
+    workflow.add_node("extract_entities",    entity_node)
+    workflow.add_node("retrieve_schema",     schema_node)
+    workflow.add_node("check_clarification", clarify_node)
+    workflow.add_node("generate_sql",        gen_node)
+    workflow.add_node("validate_sql",        valid_node)
+    workflow.add_node("optimize_sql",        opt_node)
+    workflow.add_node("execute_query",       exec_node)
+    workflow.add_node("format_result",       format_node)
 
     workflow.set_entry_point("enrich_query")
-    workflow.add_edge("enrich_query",    "classify_intent")
-    workflow.add_edge("classify_intent", "extract_entities")
+    workflow.add_edge("enrich_query",     "classify_intent")
+    workflow.add_edge("classify_intent",  "extract_entities")
     workflow.add_edge("extract_entities", "retrieve_schema")
-    workflow.add_edge("retrieve_schema", "generate_sql")
+    workflow.add_edge("retrieve_schema",  "check_clarification")
+
+    # After clarification check: stop if clarification needed, else continue to SQL
+    workflow.add_conditional_edges(
+        "check_clarification",
+        lambda s: "clarify" if s.get("need_clarification") else "generate_sql",
+        {"clarify": END, "generate_sql": "generate_sql"},
+    )
+
     workflow.add_edge("generate_sql", "validate_sql")
 
     def route_after_validation(state: Dict[str, Any]) -> str:
@@ -319,6 +339,9 @@ def run_query(
         "step": "start",
         "error": None,
         "retry_count": 0,
+        "need_clarification": False,
+        "clarification_question": "",
+        "clarification_options": [],
     }
 
     try:

@@ -191,7 +191,7 @@ export const SqlResultCard: React.FC<SqlResultCardProps> = ({ result, onOpenInEd
               Export CSV
             </button>
           </div>
-          <div style={{ height: Math.min(200, 38 + result.rows.length * 36), width: '100%' }}>
+          <div style={{ height: Math.max(200, Math.min(500, 48 + result.rows.length * 40)), width: '100%' }}>
             <div className="ag-theme-alpine-dark" style={{ height: '100%', width: '100%' }}>
               <AgGridReact
                 ref={gridRef}

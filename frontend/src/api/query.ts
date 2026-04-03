@@ -37,6 +37,7 @@ export function streamQuery(
   onSql: (sql: string) => void,
   onResult: (result: QueryResult) => void,
   onError: (msg: string) => void,
+  onClarification?: (question: string, options: string[]) => void,
 ): AbortController {
   const controller = new AbortController()
 
@@ -94,6 +95,12 @@ export function streamQuery(
               case 'result':
                 onResult(event.data as unknown as QueryResult)
                 break
+              case 'clarification':
+                onClarification?.(
+                  (event.data.question as string) ?? '',
+                  (event.data.options as string[]) ?? [],
+                )
+                break
               case 'error':
                 onError((event.data.message as string) ?? 'Unknown error')
                 break
@@ -110,6 +117,11 @@ export function streamQuery(
         const event = parseSSEBlock(remaining)
         if (event) {
           if (event.type === 'result') onResult(event.data as unknown as QueryResult)
+          else if (event.type === 'clarification')
+            onClarification?.(
+              (event.data.question as string) ?? '',
+              (event.data.options as string[]) ?? [],
+            )
           else if (event.type === 'error') onError((event.data.message as string) ?? 'Unknown error')
         }
       }
