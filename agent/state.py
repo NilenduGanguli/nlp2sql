@@ -65,6 +65,13 @@ class AgentState(TypedDict):
       limit         – Optional[int]: result limit
     """
 
+    entity_table_fqns: List[str]
+    """
+    Fully-qualified table FQNs (SCHEMA.TABLE) confirmed by the agentic entity
+    extractor.  When non-empty the context builder uses these directly,
+    skipping its own name-resolution pass.
+    """
+
     schema_context: str
     """DDL-formatted schema description injected into the LLM prompt."""
 
@@ -118,3 +125,7 @@ class AgentState(TypedDict):
 
     clarification_options: List[str]
     """Suggested answer options (empty list = open-ended)."""
+
+    # ------------------------------------------------------------------ Trace
+    _trace: List[Any]
+    """Trace steps collected by each node. Type is List[TraceStep.to_dict()]."""

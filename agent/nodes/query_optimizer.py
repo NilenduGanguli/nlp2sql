@@ -19,6 +19,7 @@ import re
 from typing import Callable, List
 
 from agent.state import AgentState
+from agent.trace import TraceStep
 
 logger = logging.getLogger(__name__)
 
@@ -47,6 +48,8 @@ def make_query_optimizer() -> Callable[[AgentState], AgentState]:
         sql = state.get("generated_sql", "").strip()
         schema_context = state.get("schema_context", "")
         applied_rules: List[str] = []
+        _trace = list(state.get("_trace", []))
+        trace = TraceStep("optimize_sql", "optimizing")
 
         # ------------------------------------------------------------------ #
         # Rule 1: Strip trailing semicolons
@@ -92,13 +95,18 @@ def make_query_optimizer() -> Callable[[AgentState], AgentState]:
 
         if applied_rules:
             logger.info("Query optimizer applied: %s", applied_rules)
+            logger.debug("Query optimizer applied: %s", applied_rules)
         else:
             logger.debug("Query optimizer: no rules applied")
+
+        trace.output_summary = {"applied_rules": applied_rules, "sql_preview": sql[:200]}
+        _trace.append(trace.finish().to_dict())
 
         return {
             **state,
             "optimized_sql": sql,
             "step": "sql_optimized",
+            "_trace": _trace,
         }
 
     return optimize_sql

@@ -34,6 +34,9 @@ import logging
 import os
 from typing import Any, Callable, Dict
 
+from agent.prompts import load_prompt
+from agent.trace import TraceStep
+
 logger = logging.getLogger(__name__)
 
 # --------------------------------------------------------------------------
@@ -141,30 +144,42 @@ def make_query_enricher(
         or _DEFAULT_KNOWLEDGE_FILE
     )
 
+    # Load prompts from file (with inline defaults as fallback)
+    system_template = load_prompt("query_enricher_system", default=_SYSTEM_TEMPLATE)
+    human_template = load_prompt("query_enricher_human", default=_HUMAN_TEMPLATE)
+
     # Load and format the system message once at factory creation time.
     # _load_knowledge is lru_cache'd, but the format() call is not — so we do
     # it here rather than on every query invocation.
     _knowledge = _load_knowledge(resolved_path)
-    _system_content = _SYSTEM_TEMPLATE.format(knowledge=_knowledge) if _knowledge else ""
+    _system_content = system_template.format(knowledge=_knowledge) if _knowledge else ""
 
     def enrich_query(state: Dict[str, Any]) -> Dict[str, Any]:
         user_input: str = state.get("user_input", "")
+        _trace = list(state.get("_trace", []))
+        trace = TraceStep("enrich_query", "enriching")
+
+        logger.debug("Query enricher: user_input=%r", user_input[:100])
 
         if not user_input.strip():
-            return {**state, "enriched_query": user_input, "step": "query_enriched"}
+            trace.output_summary = {"enriched_query_length": 0, "enriched_preview": ""}
+            _trace.append(trace.finish().to_dict())
+            return {**state, "enriched_query": user_input, "step": "query_enriched", "_trace": _trace}
 
         # Pass-through when no knowledge or no LLM
         if not (_system_content and llm):
             reason = "no knowledge file" if not _system_content else "no LLM"
             logger.debug("Query enricher: %s — using original query", reason)
-            return {**state, "enriched_query": user_input, "step": "query_enriched"}
+            trace.output_summary = {"enriched_query_length": len(user_input), "enriched_preview": user_input[:200]}
+            _trace.append(trace.finish().to_dict())
+            return {**state, "enriched_query": user_input, "step": "query_enriched", "_trace": _trace}
 
         try:
             from langchain_core.messages import HumanMessage, SystemMessage
 
             system_msg = SystemMessage(content=_system_content)
             human_msg = HumanMessage(
-                content=_HUMAN_TEMPLATE.format(user_input=user_input)
+                content=human_template.format(user_input=user_input)
             )
 
             response = llm.invoke([system_msg, human_msg])
@@ -177,18 +192,31 @@ def make_query_enricher(
             if not enriched:
                 enriched = user_input
 
+            raw_response_str = enriched
+            logger.debug("LLM raw response:\n%s", raw_response_str)
+
             logger.info(
                 "Query enriched successfully (original=%d chars → enriched=%d chars)",
                 len(user_input), len(enriched),
             )
             logger.debug("Enriched query:\n%s", enriched)
 
-            return {**state, "enriched_query": enriched, "step": "query_enriched"}
+            trace.set_llm_call(system_msg.content, human_msg.content, raw_response_str, enriched)
+            trace.output_summary = {
+                "enriched_query_length": len(enriched),
+                "enriched_preview": enriched[:200],
+            }
+            _trace.append(trace.finish().to_dict())
+
+            return {**state, "enriched_query": enriched, "step": "query_enriched", "_trace": _trace}
 
         except Exception as exc:
             logger.warning(
                 "Query enricher LLM call failed — using original query. Error: %s", exc
             )
-            return {**state, "enriched_query": user_input, "step": "query_enriched"}
+            trace.error = str(exc)
+            trace.output_summary = {"enriched_query_length": len(user_input), "enriched_preview": user_input[:200]}
+            _trace.append(trace.finish().to_dict())
+            return {**state, "enriched_query": user_input, "step": "query_enriched", "_trace": _trace}
 
     return enrich_query

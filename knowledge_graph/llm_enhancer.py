@@ -153,6 +153,28 @@ def _assign_table_importance(graph, llm) -> int:
     def _jp_degree(fqn: str) -> int:
         return len(graph.get_out_edges("JOIN_PATH", fqn))
 
+    def _oracle_fk_count(fqn: str) -> int:
+        """Count Oracle-derived FK edges (HAS_COLUMN + HAS_FOREIGN_KEY), not LLM-inferred ones."""
+        col_edges = graph.get_out_edges("HAS_COLUMN", fqn)
+        count = 0
+        for ce in col_edges:
+            # Count FK edges FROM this table's columns
+            count += len(graph.get_out_edges("HAS_FOREIGN_KEY", ce["_to"]))
+        # Also count FKs pointing TO this table's columns
+        for ce in col_edges:
+            count += len(graph.get_in_edges("HAS_FOREIGN_KEY", ce["_to"]))
+        return count
+
+    # Load business knowledge to boost tables mentioned in it
+    import os
+    knowledge_file = os.getenv("KYC_KNOWLEDGE_FILE", "kyc_business_knowledge.txt")
+    knowledge_text = ""
+    try:
+        with open(knowledge_file, encoding="utf-8") as f:
+            knowledge_text = f.read().upper()
+    except Exception:
+        pass
+
     # Build compact info list, pre-sorted by FK degree so the LLM sees the
     # most connected tables first and can calibrate its rankings.
     table_info: List[Dict[str, Any]] = []
@@ -164,9 +186,17 @@ def _assign_table_importance(graph, llm) -> int:
             "schema": t.get("schema", ""),
             "comments": (t.get("comments") or "")[:120],
             "fk_degree": _jp_degree(fqn),
+            "oracle_fk_count": _oracle_fk_count(fqn),
             "row_count": t.get("row_count") or 0,
+            "in_knowledge_file": t.get("name", "").upper() in knowledge_text,
         })
-    table_info.sort(key=lambda x: (-x["fk_degree"], -(x["row_count"]), x["name"]))
+    table_info.sort(key=lambda x: (
+        -int(x.get("in_knowledge_file", False)),
+        -x.get("oracle_fk_count", 0),
+        -x["fk_degree"],
+        -(x["row_count"]),
+        x["name"],
+    ))
 
     system_prompt = (
         "You are a database schema expert. "
@@ -185,10 +215,12 @@ Tables (JSON):
 {json.dumps(batch, indent=2)}
 
 Criteria (in order of priority):
-1. fk_degree — tables referenced by many others are more central
-2. row_count — high-volume fact/transaction tables score higher than empty lookup tables
-3. name/comments — "master", "main", "transaction", "order" tables > "audit", "log", "history" tables
-4. schema — application schemas > audit/config schemas
+1. oracle_fk_count — tables with more direct Oracle FK relationships are more central
+2. in_knowledge_file — tables explicitly documented in the business knowledge file are important
+3. fk_degree — tables referenced by many others via join paths are more central
+4. row_count — high-volume fact/transaction tables score higher than empty lookup tables
+5. name/comments — "master", "main", "transaction", "order" tables > "audit", "log", "history" tables
+6. schema — application schemas > audit/config schemas
 
 Respond ONLY with valid JSON:
 {{

@@ -20,6 +20,7 @@ import time
 from typing import Any, Callable, Dict, List
 
 from agent.state import AgentState
+from agent.trace import TraceStep
 
 logger = logging.getLogger(__name__)
 
@@ -93,8 +94,14 @@ def make_query_executor(config) -> Callable[[AgentState], AgentState]:
 
     def execute_query(state: AgentState) -> AgentState:
         sql = state.get("optimized_sql", "") or state.get("generated_sql", "")
+        _trace = list(state.get("_trace", []))
+        trace = TraceStep("execute_query", "executing")
+
+        logger.debug("Executing SQL: %s", sql[:300])
 
         if not sql:
+            trace.output_summary = {"total_rows": 0, "execution_time_ms": 0, "source": "none"}
+            _trace.append(trace.finish().to_dict())
             return {
                 **state,
                 "execution_result": {
@@ -106,6 +113,7 @@ def make_query_executor(config) -> Callable[[AgentState], AgentState]:
                 },
                 "error": "No SQL to execute.",
                 "step": "query_executed",
+                "_trace": _trace,
             }
 
         try:
@@ -115,8 +123,17 @@ def make_query_executor(config) -> Callable[[AgentState], AgentState]:
                 result["total_rows"],
                 result["execution_time_ms"],
             )
+            trace.output_summary = {
+                "total_rows": result.get("total_rows", 0),
+                "execution_time_ms": result.get("execution_time_ms", 0),
+                "source": result.get("source"),
+            }
+            _trace.append(trace.finish().to_dict())
         except Exception as exc:
             logger.error("Oracle execution failed: %s", exc)
+            trace.error = str(exc)
+            trace.output_summary = {"total_rows": 0, "execution_time_ms": 0, "source": "error"}
+            _trace.append(trace.finish().to_dict())
             return {
                 **state,
                 "execution_result": {
@@ -129,12 +146,14 @@ def make_query_executor(config) -> Callable[[AgentState], AgentState]:
                 },
                 "error": str(exc),
                 "step": "query_executed",
+                "_trace": _trace,
             }
 
         return {
             **state,
             "execution_result": result,
             "step": "query_executed",
+            "_trace": _trace,
         }
 
     return execute_query

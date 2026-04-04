@@ -16,7 +16,9 @@ import logging
 import re
 from typing import Callable
 
+from agent.prompts import load_prompt
 from agent.state import AgentState
+from agent.trace import TraceStep
 
 logger = logging.getLogger(__name__)
 
@@ -70,6 +72,8 @@ def make_sql_generator(llm) -> Callable[[AgentState], AgentState]:
     Callable[[AgentState], AgentState]
         A node function compatible with LangGraph's StateGraph.
     """
+    # Load system prompt from file (refreshed on each pipeline build)
+    system_prompt = load_prompt("sql_generator_system", default=_SYSTEM_PROMPT)
 
     def generate_sql(state: AgentState) -> AgentState:
         # Prefer enriched query (domain-augmented by query_enricher node)
@@ -78,6 +82,8 @@ def make_sql_generator(llm) -> Callable[[AgentState], AgentState]:
         conversation_history = state.get("conversation_history", [])
         validation_errors = state.get("validation_errors", [])
         retry_count = state.get("retry_count", 0)
+        _trace = list(state.get("_trace", []))
+        trace = TraceStep("generate_sql", "generating")
 
         logger.debug(
             "SQL generation attempt %d for: %r", retry_count + 1, user_input[:80]
@@ -116,11 +122,13 @@ def make_sql_generator(llm) -> Callable[[AgentState], AgentState]:
             from langchain_core.messages import HumanMessage, SystemMessage
 
             messages = [
-                SystemMessage(content=_SYSTEM_PROMPT),
+                SystemMessage(content=system_prompt),
                 HumanMessage(content=user_message),
             ]
             response = llm.invoke(messages)
             content = response.content if hasattr(response, "content") else str(response)
+
+            logger.debug("SQL generator LLM raw response:\n%s", content)
 
             # Extract SQL block
             sql_match = re.search(r"```sql\s*([\s\S]*?)```", content, re.IGNORECASE)
@@ -157,10 +165,21 @@ def make_sql_generator(llm) -> Callable[[AgentState], AgentState]:
                 len(sql_explanation),
             )
 
+            trace.set_llm_call(system_prompt, user_message, content, {"sql": generated_sql, "explanation": sql_explanation})
+
         except Exception as exc:
             logger.error("SQL generation failed: %s", exc)
             generated_sql = _build_fallback_sql(state)
             sql_explanation = f"Auto-generated fallback query (LLM error: {exc})"
+            trace.error = str(exc)
+            trace.set_llm_call(system_prompt, user_message, "", {"sql": generated_sql, "explanation": sql_explanation})
+
+        trace.output_summary = {
+            "sql_length": len(generated_sql),
+            "sql_preview": generated_sql[:300],
+            "retry_count": retry_count,
+        }
+        _trace.append(trace.finish().to_dict())
 
         return {
             **state,
@@ -168,6 +187,7 @@ def make_sql_generator(llm) -> Callable[[AgentState], AgentState]:
             "sql_explanation": sql_explanation,
             "retry_count": retry_count + (1 if retry_count > 0 else 0),
             "step": "sql_generated",
+            "_trace": _trace,
         }
 
     return generate_sql

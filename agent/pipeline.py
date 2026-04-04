@@ -342,6 +342,8 @@ def run_query(
         "need_clarification": False,
         "clarification_question": "",
         "clarification_options": [],
+        "entity_table_fqns": [],
+        "_trace": [],
     }
 
     try:

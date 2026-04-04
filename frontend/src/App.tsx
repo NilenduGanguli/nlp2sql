@@ -6,6 +6,8 @@ import { EditorPage } from './pages/EditorPage'
 import { GraphPage } from './pages/GraphPage'
 import { RelationshipsPage } from './pages/RelationshipsPage'
 import { HistoryPage } from './pages/HistoryPage'
+import { InvestigatePage } from './pages/InvestigatePage'
+import { PromptStudioPage } from './pages/PromptStudioPage'
 import { SchemaTab } from './components/schema/SchemaTab'
 import { useChatStore } from './store/chatStore'
 import type { ChatSession } from './types'
@@ -92,6 +94,26 @@ export default function App() {
         }}
       >
         <HistoryPage onResume={handleResumeSession} />
+      </div>
+
+      <div
+        style={{
+          display: activeTab === 'investigate' ? 'flex' : 'none',
+          flexDirection: 'column',
+          height: '100%',
+        }}
+      >
+        <InvestigatePage />
+      </div>
+
+      <div
+        style={{
+          display: activeTab === 'prompt_studio' ? 'flex' : 'none',
+          flexDirection: 'column',
+          height: '100%',
+        }}
+      >
+        <PromptStudioPage />
       </div>
     </AppShell>
   )

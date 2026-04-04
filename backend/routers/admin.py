@@ -111,6 +111,33 @@ async def rebuild_graph(request: Request, config=Depends(get_config)):
     )
 
 
+@router.post("/rebuild-pipeline", response_model=RebuildResponse)
+async def rebuild_pipeline_only(request: Request, config=Depends(get_config)):
+    """
+    Rebuild the LLM pipeline without touching the graph or Oracle.
+    Picks up any prompt file edits saved to disk since the last build.
+    """
+    app = request.app
+
+    async def _rebuild():
+        try:
+            from agent.pipeline import build_pipeline
+            llm = getattr(app.state, "llm", None)
+            pipeline = await anyio.to_thread.run_sync(
+                lambda: build_pipeline(app.state.graph, config, llm)
+            )
+            app.state.pipeline = pipeline
+            logger.info("Pipeline rebuilt (prompts reloaded)")
+        except Exception as exc:
+            logger.error("Pipeline-only rebuild failed: %s", exc, exc_info=True)
+
+    asyncio.create_task(_rebuild())
+    return RebuildResponse(
+        status="started",
+        message="Pipeline rebuild started. New prompts will take effect within seconds.",
+    )
+
+
 @router.get("/config", response_model=ConfigResponse)
 async def get_llm_config(config=Depends(get_config)):
     """Return the current LLM configuration (API key masked)."""

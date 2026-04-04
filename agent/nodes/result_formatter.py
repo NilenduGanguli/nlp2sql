@@ -27,6 +27,7 @@ import re
 from typing import Any, Callable, Dict, List
 
 from agent.state import AgentState
+from agent.trace import TraceStep
 
 logger = logging.getLogger(__name__)
 
@@ -50,6 +51,8 @@ def make_result_formatter() -> Callable[[AgentState], AgentState]:
         sql_explanation = state.get("sql_explanation", "")
         schema_context = state.get("schema_context", "")
         validation_errors = state.get("validation_errors", [])
+        _trace = list(state.get("_trace", []))
+        trace = TraceStep("format_result", "formatting")
 
         # ------------------------------------------------------------------ #
         # Error response
@@ -68,10 +71,13 @@ def make_result_formatter() -> Callable[[AgentState], AgentState]:
                 "schema_context_tables": _extract_table_names(schema_context),
                 "validation_errors": validation_errors,
             }
+            trace.output_summary = {"type": response["type"], "total_rows": 0, "data_source": "none"}
+            _trace.append(trace.finish().to_dict())
             return {
                 **state,
                 "formatted_response": _safe_json(response),
                 "step": "done",
+                "_trace": _trace,
             }
 
         # ------------------------------------------------------------------ #
@@ -121,10 +127,18 @@ def make_result_formatter() -> Callable[[AgentState], AgentState]:
             data_source,
         )
 
+        trace.output_summary = {
+            "type": response["type"],
+            "total_rows": response["total_rows"],
+            "data_source": response["data_source"],
+        }
+        _trace.append(trace.finish().to_dict())
+
         return {
             **state,
             "formatted_response": _safe_json(response),
             "step": "done",
+            "_trace": _trace,
         }
 
     return format_result

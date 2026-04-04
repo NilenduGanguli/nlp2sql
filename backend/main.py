@@ -32,9 +32,11 @@ from knowledge_graph.graph_cache import (
 from knowledge_graph.init_graph import initialize_graph
 
 from backend.routers import admin, health, query, schema, sql, graph as graph_router
+from backend.routers import prompts as prompts_router
 
+_log_level = os.getenv("LOG_LEVEL", "INFO").upper()
 logging.basicConfig(
-    level=logging.INFO,
+    level=getattr(logging, _log_level, logging.INFO),
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
     datefmt="%Y-%m-%dT%H:%M:%S",
 )
@@ -215,6 +217,7 @@ app.include_router(sql.router, prefix="/api")
 app.include_router(schema.router, prefix="/api")
 app.include_router(graph_router.router, prefix="/api")
 app.include_router(admin.router, prefix="/api")
+app.include_router(prompts_router.router, prefix="/api")
 
 # ---------------------------------------------------------------------------
 # Static file serving — React SPA (must come AFTER all API routers)

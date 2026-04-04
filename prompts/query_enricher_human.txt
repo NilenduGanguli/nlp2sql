@@ -1,0 +1,12 @@
+User query: {user_input}
+
+Rewrite this as a precise query specification for the SQL generator. Structure your response as:
+
+TABLES: <list the tables required>
+FILTERS: <exact column = value conditions, using the knowledge base mappings>
+JOINS: <join conditions implied by the query>
+AGGREGATIONS: <any GROUP BY / COUNT / SUM needed>
+CONSTRAINTS: <business rules that apply>
+ENRICHED QUERY: <a single-paragraph summary of the full enriched query>
+
+Keep the total response under 250 words. Start directly with TABLES:

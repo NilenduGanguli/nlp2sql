@@ -215,3 +215,45 @@ export interface ForeignKey {
   to_col: string
   constraint_name: string
 }
+
+// ──────────────────────────────────────────────────────────
+// Query Trace (Investigate tab)
+// ──────────────────────────────────────────────────────────
+export interface TraceLlmCall {
+  system_prompt: string
+  user_prompt: string
+  raw_response: string
+  parsed_output: unknown
+}
+
+export interface TraceGraphOp {
+  op: string
+  params: Record<string, unknown>
+  result_count: number
+  result_sample: unknown[]
+}
+
+export interface TraceStep {
+  node: string
+  step_label: string
+  duration_ms: number
+  llm_call: TraceLlmCall | null
+  graph_ops: TraceGraphOp[]
+  output_summary: Record<string, unknown>
+  error: string | null
+}
+
+export interface QueryTrace {
+  id: string
+  query: string
+  timestamp: Date
+  steps: TraceStep[]
+}
+
+// ──────────────────────────────────────────────────────────
+// Prompts (Investigate tab)
+// ──────────────────────────────────────────────────────────
+export interface PromptFile {
+  name: string
+  content: string
+}

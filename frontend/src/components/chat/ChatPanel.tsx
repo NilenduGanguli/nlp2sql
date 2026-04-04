@@ -1,10 +1,11 @@
 import React, { useState, useRef, useCallback } from 'react'
 import { useChatStore } from '../../store/chatStore'
 import { useChatHistoryStore } from '../../store/chatHistoryStore'
+import { useTraceStore } from '../../store/traceStore'
 import { streamQuery } from '../../api/query'
 import { MessageList } from './MessageList'
 import { StreamingIndicator } from './StreamingIndicator'
-import type { QueryStep } from '../../types'
+import type { QueryStep, TraceStep } from '../../types'
 
 const SUGGESTED_QUERIES = [
   'Show me all customers with KYC status pending',
@@ -29,6 +30,8 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ onOpenInEditor }) => {
     clearMessages,
   } = useChatStore()
   const { saveSession } = useChatHistoryStore()
+  const { startQuery, addLiveStep, finalizeTrace } = useTraceStore()
+  const traceIdRef = useRef<string>('')
   const [input, setInput] = useState('')
   const [isStreaming, setIsStreaming] = useState(false)
   const [completedSteps, setCompletedSteps] = useState<QueryStep[]>([])
@@ -46,6 +49,9 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ onOpenInEditor }) => {
       setCompletedSteps([])
       addUserMessage(content)
 
+      // Start a new trace for this query
+      traceIdRef.current = startQuery(content)
+
       abortRef.current = streamQuery(
         content,
         historySnapshot,
@@ -57,6 +63,9 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ onOpenInEditor }) => {
           addResultMessage(result)
           setIsStreaming(false)
           setCompletedSteps([])
+          // Finalize trace with the full step list from server
+          const steps = (result as { _trace?: TraceStep[] })._trace ?? []
+          finalizeTrace(traceIdRef.current, steps)
         },
         (errMsg) => {
           addErrorMessage(errMsg)
@@ -69,6 +78,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ onOpenInEditor }) => {
           setIsStreaming(false)
           setCompletedSteps([])
         },
+        (step) => addLiveStep(step),
       )
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps

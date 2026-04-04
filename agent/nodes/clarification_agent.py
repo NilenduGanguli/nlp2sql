@@ -17,6 +17,9 @@ import logging
 import re
 from typing import Any, Dict, List
 
+from agent.prompts import load_prompt
+from agent.trace import TraceStep
+
 logger = logging.getLogger(__name__)
 
 _SYSTEM = """\
@@ -50,7 +53,8 @@ OR
 {"needs_clarification": true, "question": "<one concise, specific question>", "options": ["<option1>", "<option2>"]}
 
 Options must be 2–4 short, mutually exclusive choices. Use an empty array [] for
-open-ended questions where predefined options don't make sense."""
+open-ended questions where predefined options don't make sense.\
+"""
 
 _HUMAN = """\
 Current query: {query}
@@ -61,13 +65,21 @@ Conversation history (most recent last):
 {history}
 
 Schema context (condensed):
-{schema}"""
+{schema}\
+"""
 
 
 def make_clarification_agent(llm):
     """Return a LangGraph node function that checks for query ambiguity."""
 
+    # Load prompts from files with inline defaults as fallback
+    _sys = load_prompt("clarification_agent_system", default=_SYSTEM)
+    _human = load_prompt("clarification_agent_human", default=_HUMAN)
+
     def check_clarification(state: Dict[str, Any]) -> Dict[str, Any]:
+        _trace = list(state.get("_trace", []))
+        trace = TraceStep("check_clarification", "clarification_check")
+
         _no_clarify: Dict[str, Any] = {
             **state,
             "need_clarification": False,
@@ -77,7 +89,11 @@ def make_clarification_agent(llm):
 
         user_input: str = (state.get("enriched_query") or state.get("user_input", "")).strip()
         if not user_input:
-            return _no_clarify
+            trace.output_summary = {"needs_clarification": False, "question": ""}
+            _trace.append(trace.finish().to_dict())
+            result = dict(_no_clarify)
+            result["_trace"] = _trace
+            return result
 
         entities: Dict = state.get("entities", {})
         schema_context: str = state.get("schema_context", "")
@@ -98,20 +114,20 @@ def make_clarification_agent(llm):
         else:
             history_str = "  (no prior conversation)"
 
+        human_content = _human.format(
+            query=user_input,
+            entities=entity_str,
+            history=history_str,
+            schema=schema_str,
+        )
+
         try:
             from langchain_core.messages import HumanMessage, SystemMessage
 
             response = llm.invoke(
                 [
-                    SystemMessage(content=_SYSTEM),
-                    HumanMessage(
-                        content=_HUMAN.format(
-                            query=user_input,
-                            entities=entity_str,
-                            history=history_str,
-                            schema=schema_str,
-                        )
-                    ),
+                    SystemMessage(content=_sys),
+                    HumanMessage(content=human_content),
                 ]
             )
 
@@ -120,6 +136,8 @@ def make_clarification_agent(llm):
                 if hasattr(response, "content")
                 else str(response).strip()
             )
+
+            logger.debug("Clarification LLM raw response: %s", raw)
 
             # Normalise: strip thinking tags, code fences, trailing commas
             raw = re.sub(r"<thinking>[\s\S]*?</thinking>", "", raw, flags=re.IGNORECASE)
@@ -131,23 +149,36 @@ def make_clarification_agent(llm):
 
             result = json.loads(raw.strip())
 
+            trace.set_llm_call(_sys, human_content, raw, result)
+            trace.output_summary = {
+                "needs_clarification": result.get("needs_clarification"),
+                "question": result.get("question", ""),
+            }
+
             if result.get("needs_clarification"):
                 question = str(result.get("question", "")).strip()
                 options: List[str] = [str(o) for o in result.get("options", [])]
                 if question:
                     logger.info("Clarification needed: %r (options=%s)", question, options)
+                    _trace.append(trace.finish().to_dict())
                     return {
                         **state,
                         "need_clarification": True,
                         "clarification_question": question,
                         "clarification_options": options,
+                        "_trace": _trace,
                     }
 
         except Exception as exc:
             logger.warning(
                 "Clarification check failed (%s) — proceeding without clarification", exc
             )
+            trace.error = str(exc)
+            trace.output_summary = {"needs_clarification": False, "question": ""}
 
-        return _no_clarify
+        _trace.append(trace.finish().to_dict())
+        result = dict(_no_clarify)
+        result["_trace"] = _trace
+        return result
 
     return check_clarification

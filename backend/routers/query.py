@@ -59,6 +59,8 @@ def _build_initial_state(user_input: str, history: list) -> Dict[str, Any]:
         "need_clarification": False,
         "clarification_question": "",
         "clarification_options": [],
+        "entity_table_fqns": [],
+        "_trace": [],
     }
 
 
@@ -114,6 +116,14 @@ async def stream_query(
                                 queue.put_nowait, ("step", {"step": step})
                             )
 
+                        # Emit trace step as soon as each node completes
+                        _trace = state.get("_trace", [])
+                        if _trace:
+                            latest_trace = _trace[-1]  # the step just completed
+                            loop.call_soon_threadsafe(
+                                queue.put_nowait, ("trace", latest_trace)
+                            )
+
                         # Emit SQL as soon as generator finishes
                         if node_name == "generate_sql" and state.get("generated_sql"):
                             loop.call_soon_threadsafe(
@@ -125,6 +135,8 @@ async def stream_query(
                     # completed normally (not stopped for clarification)
                     if not last_state.get("need_clarification"):
                         result = _parse_formatted_response(last_state)
+                        if result is not None:
+                            result["_trace"] = last_state.get("_trace", [])
                     else:
                         result = None
                 else:
@@ -134,6 +146,8 @@ async def stream_query(
                     )
                     final_state = pipeline.invoke(initial_state)
                     result = _parse_formatted_response(final_state)
+                    if result is not None:
+                        result["_trace"] = final_state.get("_trace", [])
 
                 if result is not None:
                     loop.call_soon_threadsafe(queue.put_nowait, ("result", result))

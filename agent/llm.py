@@ -175,7 +175,7 @@ def get_llm(config):
                 "Install with: pip install google-genai"
             ) from exc
 
-        model_name = config.llm_model or "gemini-2.5-pro"
+        model_name = config.llm_model or "gemini-2.5-flash"
         project = getattr(config, "vertex_project", None) or os.getenv("VERTEX_PROJECT", "")
         location = getattr(config, "vertex_location", None) or os.getenv("VERTEX_LOCATION", "us-central1")
         thinking_budget = int(

@@ -20,6 +20,7 @@ import re
 from typing import Callable, List
 
 from agent.state import AgentState
+from agent.trace import TraceStep
 
 logger = logging.getLogger(__name__)
 
@@ -76,15 +77,20 @@ def make_sql_validator() -> Callable[[AgentState], AgentState]:
     def validate_sql(state: AgentState) -> AgentState:
         sql = state.get("generated_sql", "").strip()
         errors: List[str] = []
+        _trace = list(state.get("_trace", []))
+        trace = TraceStep("validate_sql", "validating")
 
-        # Guard: empty SQL
+        logger.debug("SQL validator: sql=%s", sql[:200])
         if not sql:
             errors.append("Generated SQL is empty.")
+            trace.output_summary = {"validation_passed": False, "errors": errors}
+            _trace.append(trace.finish().to_dict())
             return {
                 **state,
                 "validation_passed": False,
                 "validation_errors": errors,
                 "step": "sql_validated",
+                "_trace": _trace,
             }
 
         # ------------------------------------------------------------------ #
@@ -156,11 +162,15 @@ def make_sql_validator() -> Callable[[AgentState], AgentState]:
         else:
             logger.warning("SQL validation failed: %s", errors)
 
+        trace.output_summary = {"validation_passed": validation_passed, "errors": errors}
+        _trace.append(trace.finish().to_dict())
+
         return {
             **state,
             "validation_passed": validation_passed,
             "validation_errors": errors,
             "step": "sql_validated",
+            "_trace": _trace,
         }
 
     return validate_sql

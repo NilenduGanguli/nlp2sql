@@ -17,7 +17,9 @@ import logging
 import re
 from typing import Callable
 
+from agent.prompts import load_prompt
 from agent.state import AgentState
+from agent.trace import TraceStep
 
 logger = logging.getLogger(__name__)
 
@@ -53,20 +55,26 @@ def make_intent_classifier(llm) -> Callable[[AgentState], AgentState]:
     Callable[[AgentState], AgentState]
         A node function compatible with LangGraph's StateGraph.
     """
+    system_prompt = load_prompt("intent_classifier_system", default=_SYSTEM_PROMPT)
 
     def classify_intent(state: AgentState) -> AgentState:
         user_input = state.get("user_input", "")
+        _trace = list(state.get("_trace", []))
+        trace = TraceStep("classify_intent", "classifying")
+
         logger.debug("Classifying intent for: %r", user_input[:100])
 
         try:
             from langchain_core.messages import HumanMessage, SystemMessage
 
             messages = [
-                SystemMessage(content=_SYSTEM_PROMPT),
+                SystemMessage(content=system_prompt),
                 HumanMessage(content=f"Query: {user_input}"),
             ]
             response = llm.invoke(messages)
             content = response.content if hasattr(response, "content") else str(response)
+
+            logger.debug("Intent LLM raw response: %s", content)
 
             # Extract JSON from response (handle markdown code blocks)
             json_match = re.search(r"\{[^{}]+\}", content, re.DOTALL)
@@ -87,10 +95,16 @@ def make_intent_classifier(llm) -> Callable[[AgentState], AgentState]:
 
             logger.info("Intent classified: %s (confidence=%.2f)", intent, confidence)
 
+            trace.set_llm_call(system_prompt, f"Query: {user_input}", content, {"intent": intent, "confidence": confidence})
+            trace.output_summary = {"intent": intent}
+
         except Exception as exc:
             logger.error("Intent classification failed: %s", exc)
             intent = "DATA_QUERY"
+            trace.error = str(exc)
+            trace.output_summary = {"intent": intent}
 
-        return {**state, "intent": intent, "step": "intent_classified"}
+        _trace.append(trace.finish().to_dict())
+        return {**state, "intent": intent, "step": "intent_classified", "_trace": _trace}
 
     return classify_intent

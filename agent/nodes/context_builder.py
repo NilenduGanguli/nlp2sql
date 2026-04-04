@@ -31,6 +31,7 @@ from knowledge_graph.traversal import (
     serialize_context_to_ddl,
 )
 from agent.state import AgentState
+from agent.trace import TraceStep
 
 logger = logging.getLogger(__name__)
 
@@ -38,6 +39,8 @@ logger = logging.getLogger(__name__)
 _CHARS_PER_TOKEN = 3.5
 # Maximum tables to include in the context subgraph (budget guard)
 _MAX_CONTEXT_TABLES = 10
+# Effective token budget — large enough to never truncate normal schemas
+_DEFAULT_TOKEN_BUDGET = 200000
 
 
 def make_context_builder(graph: KnowledgeGraph) -> Callable[[AgentState], AgentState]:
@@ -57,118 +60,134 @@ def make_context_builder(graph: KnowledgeGraph) -> Callable[[AgentState], AgentS
     def retrieve_schema(state: AgentState) -> AgentState:
         entities = state.get("entities", {})
         table_hints: List[str] = entities.get("tables", [])
-        token_budget: int = state.get("token_budget", 4000) if "token_budget" in state else 4000
-        char_budget = int(token_budget * _CHARS_PER_TOKEN) if token_budget else 14_000
+        _trace = list(state.get("_trace", []))
+        trace = TraceStep("retrieve_schema", "retrieving")
+
+        # Use a very large token budget so normal schemas are never truncated
+        token_budget: int = _DEFAULT_TOKEN_BUDGET
+        char_budget = int(token_budget * _CHARS_PER_TOKEN)  # ~700k chars
 
         logger.debug("Context builder: table_hints=%s", table_hints)
 
         collected_fqns: Set[str] = set()
 
-        # --- Step 1: Search schema by table name hints ---
-        for hint in table_hints:
-            results = search_schema(graph, hint, limit=5)
-            for r in results:
-                if r.get("label") == "Table":
-                    collected_fqns.add(r["fqn"])
-                elif r.get("label") == "BusinessTerm":
-                    bt_results = resolve_business_term(graph, hint)
-                    for bt in bt_results:
-                        target_fqn = bt.get("target_fqn", "")
-                        if graph.get_node("Table", target_fqn):
-                            collected_fqns.add(target_fqn)
-
-        # --- Step 2: Business term resolution for all hints ---
-        for hint in table_hints:
-            bt_results = resolve_business_term(graph, hint)
-            for bt in bt_results[:3]:
-                target_fqn = bt.get("target_fqn", "")
-                if graph.get_node("Table", target_fqn):
-                    collected_fqns.add(target_fqn)
-
-        # --- Step 3: Column-level fallback — derive parent table from column FQN ---
-        if not collected_fqns and table_hints:
+        # --- Fast path: agentic entity extractor already resolved FQNs ---
+        agent_fqns: List[str] = state.get("entity_table_fqns", [])
+        if agent_fqns:
+            collected_fqns = set(agent_fqns)
+            logger.info(
+                "Context builder: using %d pre-resolved FQNs from entity extractor: %s",
+                len(collected_fqns), collected_fqns,
+            )
+            trace.add_graph_op(
+                "use_preresolved_fqns",
+                {"source": "agentic_entity_extractor", "count": len(collected_fqns)},
+                list(collected_fqns),
+            )
+        else:
+            # --- Step 1: Search schema by table name hints ---
             for hint in table_hints:
-                results = search_schema(graph, hint, limit=10)
+                results = search_schema(graph, hint, limit=5)
+                logger.debug("Context builder: search_schema(%r) → %d results", hint, len(results))
+                trace.add_graph_op("search_schema", {"hint": hint}, results)
                 for r in results:
-                    if r.get("label") == "Column":
-                        parts = r.get("fqn", "").rsplit(".", 1)
-                        if len(parts) == 2:
-                            table_fqn = parts[0]
-                            if graph.get_node("Table", table_fqn):
-                                collected_fqns.add(table_fqn)
-                    elif r.get("label") == "Table":
+                    if r.get("label") == "Table":
                         collected_fqns.add(r["fqn"])
-                    if collected_fqns:
-                        break
+                    elif r.get("label") == "BusinessTerm":
+                        bt_results = resolve_business_term(graph, hint)
+                        trace.add_graph_op("resolve_business_term", {"hint": hint}, bt_results)
+                        for bt in bt_results:
+                            target_fqn = bt.get("target_fqn", "")
+                            if graph.get_node("Table", target_fqn):
+                                collected_fqns.add(target_fqn)
 
-        # --- Step 4: Expand by 1-hop FK neighbours via pre-computed JOIN_PATHs ---
-        # This ensures the LLM has DDL context for every table it will need to JOIN,
-        # not just the directly-named tables. Only expand when the set is small so we
-        # don't overflow the token budget.
-        if collected_fqns and len(collected_fqns) <= 4:
-            neighbors: Set[str] = set()
-            for fqn in list(collected_fqns):
-                for jp_edge in graph.get_out_edges("JOIN_PATH", fqn):
-                    neighbor_fqn = jp_edge["_to"]
-                    if neighbor_fqn not in collected_fqns:
-                        neighbors.add(neighbor_fqn)
+            # --- Step 2: Business term resolution for all hints ---
+            for hint in table_hints:
+                bt_results = resolve_business_term(graph, hint)
+                logger.debug("Context builder: resolve_business_term(%r) → %d results", hint, len(bt_results))
+                trace.add_graph_op("resolve_business_term", {"hint": hint}, bt_results)
+                for bt in bt_results[:3]:
+                    target_fqn = bt.get("target_fqn", "")
+                    if graph.get_node("Table", target_fqn):
+                        collected_fqns.add(target_fqn)
 
-            # Add neighbours sorted by their own connectivity (most connected first)
-            sorted_neighbors = sorted(neighbors, key=_jp_degree, reverse=True)
-            for n in sorted_neighbors:
-                if len(collected_fqns) >= _MAX_CONTEXT_TABLES:
-                    break
-                collected_fqns.add(n)
-                logger.debug("Context builder: added FK neighbour %s", n)
+            # --- Step 3: Column-level fallback — derive parent table from column FQN ---
+            if not collected_fqns and table_hints:
+                for hint in table_hints:
+                    results = search_schema(graph, hint, limit=10)
+                    trace.add_graph_op("search_schema", {"hint": hint, "fallback": True}, results)
+                    for r in results:
+                        if r.get("label") == "Column":
+                            parts = r.get("fqn", "").rsplit(".", 1)
+                            if len(parts) == 2:
+                                table_fqn = parts[0]
+                                if graph.get_node("Table", table_fqn):
+                                    collected_fqns.add(table_fqn)
+                        elif r.get("label") == "Table":
+                            collected_fqns.add(r["fqn"])
+                        if collected_fqns:
+                            break
 
-            # --- Step 4b: SIMILAR_TO expansion — no JOIN_PATH edges found ---
-            # When the DB has no FK constraints (so no JOIN_PATHs), use column-name
-            # similarity edges as a secondary join-inference mechanism.
-            if not neighbors and len(collected_fqns) < _MAX_CONTEXT_TABLES:
-                for e in graph.get_all_edges("SIMILAR_TO"):
-                    if e.get("score", 0) < 0.85:
-                        continue  # only high-confidence similarity
-                    src_col = e.get("_from", "")
-                    tgt_col = e.get("_to", "")
-                    # Column FQN is SCHEMA.TABLE.COLUMN — drop last part to get table FQN
-                    src_table = src_col.rsplit(".", 1)[0] if "." in src_col else ""
-                    tgt_table = tgt_col.rsplit(".", 1)[0] if "." in tgt_col else ""
-                    if src_table in collected_fqns and tgt_table not in collected_fqns:
-                        if graph.get_node("Table", tgt_table):
-                            collected_fqns.add(tgt_table)
-                            logger.debug(
-                                "Context builder: added SIMILAR_TO neighbour %s (score=%.2f)",
-                                tgt_table, e.get("score", 0),
-                            )
+            # --- Step 4: Expand by 1-hop FK neighbours via pre-computed JOIN_PATHs ---
+            if collected_fqns and len(collected_fqns) <= 4:
+                neighbors: Set[str] = set()
+                for fqn in list(collected_fqns):
+                    for jp_edge in graph.get_out_edges("JOIN_PATH", fqn):
+                        neighbor_fqn = jp_edge["_to"]
+                        if neighbor_fqn not in collected_fqns:
+                            neighbors.add(neighbor_fqn)
+
+                logger.debug("Context builder: FK neighbours found: %s", neighbors)
+                trace.add_graph_op("expand_fk_neighbors", {"seed_tables": list(collected_fqns)}, list(neighbors))
+
+                sorted_neighbors = sorted(neighbors, key=_jp_degree, reverse=True)
+                for n in sorted_neighbors:
                     if len(collected_fqns) >= _MAX_CONTEXT_TABLES:
                         break
+                    collected_fqns.add(n)
+                    logger.debug("Context builder: added FK neighbour %s", n)
 
-        # --- Step 5: Connectivity-ranked fallback — no tables resolved at all ---
-        if not collected_fqns:
-            logger.warning(
-                "No tables found for hints %s; falling back to most important tables",
-                table_hints,
-            )
-            all_tables = graph.get_all_nodes("Table")
+                # --- Step 4b: SIMILAR_TO expansion ---
+                if not neighbors and len(collected_fqns) < _MAX_CONTEXT_TABLES:
+                    for e in graph.get_all_edges("SIMILAR_TO"):
+                        if e.get("score", 0) < 0.85:
+                            continue
+                        src_col = e.get("_from", "")
+                        tgt_col = e.get("_to", "")
+                        src_table = src_col.rsplit(".", 1)[0] if "." in src_col else ""
+                        tgt_table = tgt_col.rsplit(".", 1)[0] if "." in tgt_col else ""
+                        if src_table in collected_fqns and tgt_table not in collected_fqns:
+                            if graph.get_node("Table", tgt_table):
+                                collected_fqns.add(tgt_table)
+                                logger.debug(
+                                    "Context builder: added SIMILAR_TO neighbour %s (score=%.2f)",
+                                    tgt_table, e.get("score", 0),
+                                )
+                        if len(collected_fqns) >= _MAX_CONTEXT_TABLES:
+                            break
 
-            # Sort priority: LLM importance_rank (1=best) > JOIN_PATH degree > row_count
-            # With reverse=True, higher tuple values sort first.
-            def _fallback_key(t: dict) -> tuple:
-                fqn = t.get("fqn", "")
-                jp = _jp_degree(fqn)
-                rows = t.get("row_count") or 0
-                llm_rank = t.get("importance_rank")
-                if llm_rank is not None:
-                    # Bucket 1: LLM-ranked (rank=1 → -1, largest → sorts first)
-                    return (1, -int(llm_rank), jp)
-                # Bucket 0: structural metrics only
-                return (0, jp, rows)
+            # --- Step 5: Connectivity-ranked fallback ---
+            if not collected_fqns:
+                logger.warning(
+                    "No tables found for hints %s; falling back to most important tables",
+                    table_hints,
+                )
+                all_tables = graph.get_all_nodes("Table")
 
-            ranked = sorted(all_tables, key=_fallback_key, reverse=True)
-            for t in ranked[:5]:
-                fqn = t.get("fqn", "")
-                if fqn:
-                    collected_fqns.add(fqn)
+                def _fallback_key(t: dict) -> tuple:
+                    fqn = t.get("fqn", "")
+                    jp = _jp_degree(fqn)
+                    rows = t.get("row_count") or 0
+                    llm_rank = t.get("importance_rank")
+                    if llm_rank is not None:
+                        return (1, -int(llm_rank), jp)
+                    return (0, jp, rows)
+
+                ranked = sorted(all_tables, key=_fallback_key, reverse=True)
+                for t in ranked[:5]:
+                    fqn = t.get("fqn", "")
+                    if fqn:
+                        collected_fqns.add(fqn)
 
         logger.info(
             "Context builder: resolved %d table FQNs: %s",
@@ -180,7 +199,7 @@ def make_context_builder(graph: KnowledgeGraph) -> Callable[[AgentState], AgentS
         context = get_context_subgraph(graph, list(collected_fqns))
         ddl_text = serialize_context_to_ddl(context)
 
-        # --- Step 7: Truncate to token budget ---
+        # --- Step 7: Truncate to char budget (very large — effectively disabled) ---
         if len(ddl_text) > char_budget:
             ddl_text = ddl_text[:char_budget] + "\n-- [Schema truncated to fit token budget]"
 
@@ -201,11 +220,16 @@ def make_context_builder(graph: KnowledgeGraph) -> Callable[[AgentState], AgentS
 
         # --- Step 8b: Add join path hints if multiple tables in context ---
         fqn_list = list(collected_fqns)
+        join_hints: List[str] = []
         if len(fqn_list) >= 2:
-            join_hints: List[str] = []
             for i in range(len(fqn_list)):
                 for j in range(i + 1, len(fqn_list)):
                     path = find_join_path(graph, fqn_list[i], fqn_list[j], max_hops=4)
+                    trace.add_graph_op(
+                        "find_join_path",
+                        {"t1": fqn_list[i], "t2": fqn_list[j]},
+                        [path] if path else [],
+                    )
                     if path and path.get("source") == "precomputed":
                         join_cols = path.get("join_columns", [])
                         if join_cols:
@@ -215,6 +239,13 @@ def make_context_builder(graph: KnowledgeGraph) -> Callable[[AgentState], AgentS
             if join_hints:
                 ddl_text += "\n\n-- SUGGESTED JOIN PATHS:\n" + "\n".join(join_hints[:8])
 
-        return {**state, "schema_context": ddl_text, "step": "schema_retrieved"}
+        trace.output_summary = {
+            "resolved_tables": list(collected_fqns),
+            "schema_context_chars": len(ddl_text),
+            "join_hints": len(join_hints),
+        }
+        _trace.append(trace.finish().to_dict())
+
+        return {**state, "schema_context": ddl_text, "step": "schema_retrieved", "_trace": _trace}
 
     return retrieve_schema

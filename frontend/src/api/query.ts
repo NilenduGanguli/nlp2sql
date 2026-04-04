@@ -1,4 +1,4 @@
-import type { ConversationMessage, QueryResult, QueryStep } from '../types'
+import type { ConversationMessage, QueryResult, QueryStep, TraceStep } from '../types'
 
 interface SSEEvent {
   type: string
@@ -35,9 +35,10 @@ export function streamQuery(
   history: ConversationMessage[],
   onStep: (step: QueryStep) => void,
   onSql: (sql: string) => void,
-  onResult: (result: QueryResult) => void,
+  onResult: (result: QueryResult & { _trace?: TraceStep[] }) => void,
   onError: (msg: string) => void,
   onClarification?: (question: string, options: string[]) => void,
+  onTrace?: (step: TraceStep) => void,
 ): AbortController {
   const controller = new AbortController()
 
@@ -100,6 +101,9 @@ export function streamQuery(
                   (event.data.question as string) ?? '',
                   (event.data.options as string[]) ?? [],
                 )
+                break
+              case 'trace':
+                onTrace?.(event.data as unknown as TraceStep)
                 break
               case 'error':
                 onError((event.data.message as string) ?? 'Unknown error')

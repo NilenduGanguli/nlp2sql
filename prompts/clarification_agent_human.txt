@@ -1,0 +1,9 @@
+Current query: {query}
+
+Identified entities: {entities}
+
+Conversation history (most recent last):
+{history}
+
+Schema context (condensed):
+{schema}
