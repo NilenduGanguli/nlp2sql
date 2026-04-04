@@ -1,7 +1,7 @@
 import { apiFetch } from './client'
 import type { GraphVisualization, JoinPath, ForeignKey } from '../types'
 
-export function fetchGraphVisualization(limit = 200): Promise<GraphVisualization> {
+export function fetchGraphVisualization(limit = 10000): Promise<GraphVisualization> {
   return apiFetch<GraphVisualization>(`/graph/visualization?limit=${limit}`)
 }
 

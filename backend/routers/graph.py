@@ -19,7 +19,7 @@ router = APIRouter(prefix="/graph", tags=["graph"])
 @router.get("/visualization", response_model=GraphVisualization)
 async def get_visualization(
     graph=Depends(get_graph),
-    limit: int = Query(default=200, ge=10, le=1000, description="Max tables to include"),
+    limit: int = Query(default=10000, ge=10, le=10000, description="Max tables to include"),
 ):
     """
     Return a graph visualization payload (nodes + edges).

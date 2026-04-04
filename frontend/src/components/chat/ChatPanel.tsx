@@ -66,11 +66,13 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ onOpenInEditor }) => {
           // Finalize trace with the full step list from server
           const steps = (result as { _trace?: TraceStep[] })._trace ?? []
           finalizeTrace(traceIdRef.current, steps)
+          setTimeout(() => textareaRef.current?.focus(), 0)
         },
         (errMsg) => {
           addErrorMessage(errMsg)
           setIsStreaming(false)
           setCompletedSteps([])
+          setTimeout(() => textareaRef.current?.focus(), 0)
         },
         (question, options) => {
           // Agent is asking for clarification — show card, stop streaming indicator

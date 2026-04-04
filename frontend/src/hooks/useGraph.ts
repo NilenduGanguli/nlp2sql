@@ -2,7 +2,7 @@ import { useQuery } from '@tanstack/react-query'
 import { fetchGraphVisualization, fetchForeignKeys } from '../api/graph'
 import type { GraphVisualization, ForeignKey } from '../types'
 
-export function useGraph(limit = 200) {
+export function useGraph(limit = 10000) {
   return useQuery<GraphVisualization>({
     queryKey: ['graph', 'visualization', limit],
     queryFn: () => fetchGraphVisualization(limit),
