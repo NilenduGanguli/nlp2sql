@@ -48,6 +48,7 @@ const OP_COLORS: Record<string, string> = {
   resolve_business_term: '#34d399',
   list_related_tables:   '#60a5fa',
   query_oracle:          '#f472b6',
+  get_column_values:     '#fb923c',
   submit_entities:       '#4ade80',
   use_preresolved_fqns:  '#4ade80',
   expand_fk_neighbors:   '#fb923c',
@@ -60,6 +61,7 @@ const OP_HINTS: Record<string, string> = {
   resolve_business_term: 'Mapped business term → schema object',
   list_related_tables:   'FK-reachable tables from a seed table',
   query_oracle:          'Live Oracle SELECT — actual data from the database',
+  get_column_values:     'Distinct values for a specific column (enum lookup, cached)',
   submit_entities:       'Final extracted entities + confirmed FQNs',
   use_preresolved_fqns:  'Used FQNs pre-resolved by entity agent (resolution skipped)',
   expand_fk_neighbors:   '1-hop FK neighbour expansion',
@@ -700,12 +702,14 @@ export const InvestigatePage: React.FC = () => {
                   {(() => {
                     const totalOps = activeTrace.steps.reduce((sum, s) => sum + s.graph_ops.length, 0)
                     const oracleCalls = activeTrace.steps.reduce((sum, s) => sum + s.graph_ops.filter(o => o.op === 'query_oracle').length, 0)
+                    const valueLookups = activeTrace.steps.reduce((sum, s) => sum + s.graph_ops.filter(o => o.op === 'get_column_values').length, 0)
                     const agentStep = activeTrace.steps.find((s) => s.node === 'extract_entities')
                     const iterations = agentStep?.output_summary?.iterations as number | undefined
                     return (
                       <>
                         {totalOps > 0 && <Badge label={`${totalOps} graph/tool ops`} color="#38bdf8" />}
                         {oracleCalls > 0 && <Badge label={`${oracleCalls} oracle queries`} color="#f472b6" />}
+                        {valueLookups > 0 && <Badge label={`${valueLookups} value lookups`} color="#fb923c" />}
                         {iterations != null && <Badge label={`entity agent: ${iterations} iterations`} color={C.accent} />}
                       </>
                     )

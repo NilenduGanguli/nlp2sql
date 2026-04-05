@@ -290,16 +290,33 @@ def get_context_subgraph(graph: KnowledgeGraph, table_fqns: List[str]) -> List[D
     return context
 
 
-def serialize_context_to_ddl(context: List[Dict[str, Any]]) -> str:
+def serialize_context_to_ddl(
+    context: List[Dict[str, Any]],
+    get_values=None,
+) -> str:
     """
     Convert a context subgraph (from get_context_subgraph) into a DDL-like
     text format suitable for injection into an LLM prompt.
+
+    Parameters
+    ----------
+    context : list
+        Output of :func:`get_context_subgraph`.
+    get_values : callable, optional
+        ``(schema, table, column) -> List[str]`` — when provided, enum-like
+        columns are annotated with their actual distinct DB values, e.g.
+        ``-- Values(3): 'ACTIVE', 'INACTIVE', 'PENDING'``.
+        Typically created with :func:`~knowledge_graph.column_value_cache.make_value_getter`.
     """
+    from knowledge_graph.column_value_cache import is_likely_enum_column  # local import avoids cycles
+
     lines: List[str] = []
 
     for entry in context:
         t = entry["table"]
-        tname = f'{t.get("schema", "")}.{t.get("name", "")}'
+        t_schema = t.get("schema", "")
+        t_name   = t.get("name", "")
+        tname = f"{t_schema}.{t_name}"
         lines.append(f"-- TABLE: {tname}")
         if t.get("comments"):
             lines.append(f"-- Description: {t['comments']}")
@@ -319,6 +336,16 @@ def serialize_context_to_ddl(context: List[Dict[str, Any]]) -> str:
                 f"    {col['name']:<35} {dtype:<25} {null_str}"
                 f"{pk_flag}{fk_flag}{idx_flag}{comment}"
             )
+            # Annotate enum-like columns with actual distinct values from the DB
+            if get_values and is_likely_enum_column(
+                col["name"],
+                col.get("data_type", ""),
+                col.get("data_length") or 0,
+            ):
+                vals = get_values(t_schema, t_name, col["name"])
+                if vals:
+                    vals_str = ", ".join(f"'{v}'" for v in vals)
+                    col_line += f"  -- Values({len(vals)}): {vals_str}"
             col_lines.append(col_line)
 
         lines.append(",\n".join(col_lines))

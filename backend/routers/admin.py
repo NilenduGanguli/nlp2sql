@@ -238,6 +238,7 @@ async def get_agent_config():
         {"name": "resolve_business_term", "color": "#34d399", "description": "Map business/domain language (e.g. 'KYC check') to schema objects"},
         {"name": "list_related_tables",   "color": "#60a5fa", "description": "List all FK-reachable tables from a seed table"},
         {"name": "query_oracle",          "color": "#f472b6", "description": f"Execute a read-only SELECT against the live Oracle DB (max {_ORACLE_MAX_ROWS} rows). Use to inspect actual data values, check filter conditions, or query data dictionary views."},
+        {"name": "get_column_values",     "color": "#fb923c", "description": "Get distinct values for a specific column (enum-like: STATUS, TYPE, FLAG, CODE, etc.) — faster than query_oracle for value lookup. Cached in-process after first fetch."},
         {"name": "submit_entities",       "color": "#4ade80", "description": "Finalise entity extraction — tables, columns, conditions, confirmed FQNs"},
     ]
 

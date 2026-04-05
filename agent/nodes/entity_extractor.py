@@ -303,6 +303,34 @@ def _call_graph_tool(
             trace.add_graph_op("query_oracle", {"sql": sql[:200]}, [])
             return result, []
 
+        elif action == "get_column_values":
+            tbl_fqn = args.get("table_fqn", "").upper().strip()
+            col     = args.get("column_name", "").upper().strip()
+            if not tbl_fqn or not col:
+                return "Error: table_fqn and column_name are required.", []
+            parts = tbl_fqn.split(".", 1)
+            if len(parts) != 2:
+                return f"Error: table_fqn must be SCHEMA.TABLE, got: {tbl_fqn}", []
+            schema_name, table_name = parts
+            if config is None:
+                return "Oracle not configured — get_column_values unavailable.", []
+            try:
+                from knowledge_graph.column_value_cache import get_distinct_values
+                vals = get_distinct_values(schema_name, table_name, col, config)
+            except Exception as exc:
+                return f"get_column_values error: {exc}", []
+            trace.add_graph_op("get_column_values", {"table_fqn": tbl_fqn, "column": col}, [])
+            if not vals:
+                return (
+                    f"No distinct values found for {tbl_fqn}.{col} "
+                    f"(column may have too many values or be empty)."
+                ), []
+            vals_display = ", ".join(f"'{v}'" for v in vals)
+            return (
+                f"Distinct values for {tbl_fqn}.{col} ({len(vals)} total): {vals_display}\n"
+                f"Use these exact values in WHERE clauses for this column."
+            ), []
+
         else:
             return f"Unknown tool: {action}", []
 
@@ -525,6 +553,11 @@ RULES:
   what date ranges are present, how many rows a table has, or what a column's typical values look like
 - Use query_oracle on Oracle data dictionary views (ALL_TABLES, ALL_COLUMNS, ALL_CONSTRAINTS)
   when the user asks about schema structure or metadata
+- Use get_column_values for any filter-critical column (STATUS, TYPE, FLAG, CODE, LEVEL, CATEGORY,
+  RISK, TIER, etc.) where you will need to write a WHERE clause. This is faster than query_oracle
+  for enum lookup. Pass the exact values into entity hints so downstream SQL generation is correct
+- If the user's query implies a specific value (e.g. "active customers", "high risk", "pending review"),
+  call get_column_values on the relevant column to find the matching actual stored value before submitting
 - Prefer Oracle UPPERCASE names. table_fqns must be SCHEMA.TABLE format
 - You have up to {max_calls} tool calls; use them wisely but do not stop early
 ─────────────────────────────────────────────────────
@@ -558,7 +591,13 @@ _TOOLS_SPEC = """\
    Only SELECT or WITH queries allowed; max 20 rows returned.
    Args: {"sql": "SELECT STATUS, COUNT(*) FROM KYC.KYC_STATUS GROUP BY STATUS"}
 
-7. submit_entities
+7. get_column_values
+   Get the distinct values for a specific column — faster than writing a SELECT DISTINCT query.
+   Use this whenever a column is filter-critical (STATUS, TYPE, CODE, FLAG, LEVEL, etc.) so
+   you know the exact values to pass to the SQL generator or to surface in clarification.
+   Args: {"table_fqn": "SCHEMA.TABLE_NAME", "column_name": "COLUMN_NAME"}
+
+8. submit_entities
    Finalise your findings. MUST include table_fqns (fully-qualified).
    See response format above."""
 

@@ -43,7 +43,7 @@ _MAX_CONTEXT_TABLES = 10
 _DEFAULT_TOKEN_BUDGET = 200000
 
 
-def make_context_builder(graph: KnowledgeGraph) -> Callable[[AgentState], AgentState]:
+def make_context_builder(graph: KnowledgeGraph, config=None) -> Callable[[AgentState], AgentState]:
     """
     Factory: returns a LangGraph node function that retrieves schema context.
 
@@ -51,6 +51,11 @@ def make_context_builder(graph: KnowledgeGraph) -> Callable[[AgentState], AgentS
     ----------
     graph : KnowledgeGraph
         The populated in-memory knowledge graph.
+    config : AppConfig, optional
+        When provided, enum-like columns in the DDL are annotated with their
+        actual distinct values from Oracle (e.g. ``-- Values(3): 'A', 'I', 'P'``).
+        This feeds correct filter values to the SQL generator, clarification agent,
+        and entity extractor without any extra work per node.
     """
 
     # Pre-rank all tables by JOIN_PATH connectivity so the fallback is fast.
@@ -197,7 +202,17 @@ def make_context_builder(graph: KnowledgeGraph) -> Callable[[AgentState], AgentS
 
         # --- Step 6: Build context subgraph and serialize to DDL ---
         context = get_context_subgraph(graph, list(collected_fqns))
-        ddl_text = serialize_context_to_ddl(context)
+        # Inject actual distinct values for enum-like columns when Oracle is available.
+        # This makes every downstream node (clarification, SQL generator, validator)
+        # aware of real filter values without additional Oracle calls per node.
+        _value_getter = None
+        if config is not None:
+            try:
+                from knowledge_graph.column_value_cache import make_value_getter
+                _value_getter = make_value_getter(config)
+            except Exception as _vg_exc:
+                logger.debug("Column value getter unavailable: %s", _vg_exc)
+        ddl_text = serialize_context_to_ddl(context, get_values=_value_getter)
 
         # --- Step 7: Truncate to char budget (very large — effectively disabled) ---
         if len(ddl_text) > char_budget:

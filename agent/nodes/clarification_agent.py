@@ -59,10 +59,25 @@ Do NOT ask when:
 
 OPTION DESIGN
 ─────────────
-Options must be expressed in business language, never as raw column values or
-table names. Each option should describe a real-world scenario the user might mean.
+Options must be expressed in business language that the user understands.
+Each option should describe a real-world scenario the user might mean.
 Include 3–6 options. Always end with a free-text option like
 "Custom — let me describe exactly what I need".
+
+IMPORTANT — Grounding options in actual DB values:
+The schema context contains DDL annotated with real stored values for filter columns,
+e.g.:  STATUS  VARCHAR2(20)  -- Values(3): 'ACTIVE', 'INACTIVE', 'PENDING'
+When such annotations exist, your options MUST embed the actual DB value so the
+user's choice can be translated directly to a WHERE clause without guessing.
+Format: "<Business description> (STATUS = 'ACTIVE')"
+Example if STATUS has Values: 'ACTIVE', 'INACTIVE', 'PENDING':
+  → "Active customers only (STATUS = 'ACTIVE')"
+  → "Inactive customers (STATUS = 'INACTIVE')"
+  → "Pending review customers (STATUS = 'PENDING')"
+  → "All customers regardless of status"
+  → "Custom — let me describe exactly what I need"
+Never invent values; only use values shown in the -- Values(...): annotation.
+If no annotation exists for the relevant column, use purely business language.
 
 RESPONSE FORMAT
 ───────────────

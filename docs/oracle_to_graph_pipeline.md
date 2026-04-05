@@ -41,9 +41,9 @@ Two dataclasses control the entire pipeline:
 | `password` | `ORACLE_PASSWORD` | — | DB password |
 | `target_schemas` | `ORACLE_TARGET_SCHEMAS` | (all accessible) | Comma-separated list of schema names to introspect |
 | `sample_rows` | `ORACLE_SAMPLE_ROWS` | `10` | Rows sampled per table for `sample_values` on columns |
-| `use_dba_views` | `ORACLE_USE_DBA_VIEWS` | `true` | Use `DBA_*` views (requires DBA privilege); `false` uses `ALL_*` views |
+| `use_dba_views` | `ORACLE_USE_DBA_VIEWS` | `false` | Use `DBA_*` views (requires DBA privilege); `false` uses `ALL_*` views (default) |
 
-The `view_prefix` property returns `"DBA"` or `"ALL"` and is used to prefix every data dictionary view name in every SQL query.
+The `view_prefix` property returns `"DBA"` or `"ALL"` and is used to prefix every data dictionary view name in every SQL query. The default is `ALL_*` views, which work for any standard schema account without special privileges.
 
 ### `GraphConfig`
 
@@ -82,7 +82,7 @@ The same bind dict reuses the same names across multiple `IN` clauses in the sam
 
 ### 2.1 Tables
 
-**View:** `DBA_TABLES` + `DBA_TAB_COMMENTS`
+**View:** `ALL_TABLES` + `ALL_TAB_COMMENTS`
 
 ```sql
 SELECT
@@ -92,8 +92,8 @@ SELECT
     NVL(t.iot_type, 'TABLE') AS table_type,
     t.partitioned, t.temporary,
     tc.comments
-FROM DBA_TABLES t
-LEFT JOIN DBA_TAB_COMMENTS tc
+FROM ALL_TABLES t
+LEFT JOIN ALL_TAB_COMMENTS tc
     ON  tc.owner = t.owner
     AND tc.table_name = t.table_name
     AND tc.table_type = 'TABLE'
@@ -110,7 +110,7 @@ FQN: `SCHEMA.TABLE`
 
 ### 2.2 Columns
 
-**View:** `DBA_TAB_COLUMNS` + `DBA_COL_COMMENTS` + `DBA_TAB_COL_STATISTICS`
+**View:** `ALL_TAB_COLUMNS` + `ALL_COL_COMMENTS` + `ALL_TAB_COL_STATISTICS`
 
 ```sql
 SELECT
@@ -119,9 +119,9 @@ SELECT
     c.nullable, c.data_default, c.column_id,
     cc.comments,
     s.num_distinct, s.histogram
-FROM DBA_TAB_COLUMNS c
-LEFT JOIN DBA_COL_COMMENTS cc ON (owner/table/column match)
-LEFT JOIN DBA_TAB_COL_STATISTICS s ON (owner/table/column match)
+FROM ALL_TAB_COLUMNS c
+LEFT JOIN ALL_COL_COMMENTS cc ON (owner/table/column match)
+LEFT JOIN ALL_TAB_COL_STATISTICS s ON (owner/table/column match)
 WHERE c.owner IN (:s0, ...)
 ORDER BY c.owner, c.table_name, c.column_id
 ```
@@ -132,18 +132,20 @@ FQN: `SCHEMA.TABLE.COLUMN`
 
 Boolean flags `is_pk`, `is_fk`, `is_indexed` are set in the post-processing step after all constraints and indexes are extracted.
 
+> **Note on LONG columns:** `ALL_TAB_COLUMNS.DATA_DEFAULT` is a LONG column. The extractor creates a LONG buffer var with `cursor.var(DB_TYPE_LONG, size, cursor.arraysize)` — the third argument (arraysize) is required; omitting it causes `DPY-2016` in thin mode.
+
 ---
 
 ### 2.3 Primary Keys
 
-**View:** `DBA_CONSTRAINTS` + `DBA_CONS_COLUMNS`
+**View:** `ALL_CONSTRAINTS` + `ALL_CONS_COLUMNS`
 
 ```sql
 SELECT
     a.owner, a.table_name, a.constraint_name,
     b.column_name, b.position
-FROM DBA_CONSTRAINTS a
-JOIN DBA_CONS_COLUMNS b ON (owner/constraint match)
+FROM ALL_CONSTRAINTS a
+JOIN ALL_CONS_COLUMNS b ON (owner/constraint match)
 WHERE a.owner IN (:s0, ...)
   AND a.constraint_type = 'P'
   AND a.status = 'ENABLED'
@@ -156,7 +158,7 @@ ORDER BY a.owner, a.table_name, b.position
 
 ### 2.4 Foreign Keys
 
-**View:** `DBA_CONSTRAINTS` + `DBA_CONS_COLUMNS` (self-joined four times)
+**View:** `ALL_CONSTRAINTS` + `ALL_CONS_COLUMNS` (self-joined four times)
 
 ```sql
 SELECT
@@ -165,15 +167,16 @@ SELECT
     b.column_name   AS fk_column,  b.position,
     c.owner         AS ref_owner,  c.table_name AS ref_table,
     d.column_name   AS ref_column
-FROM DBA_CONSTRAINTS a
-JOIN DBA_CONS_COLUMNS b ON (a.owner / a.constraint_name)
-JOIN DBA_CONSTRAINTS  c ON (c.constraint_name = a.r_constraint_name)
-JOIN DBA_CONS_COLUMNS d ON (d.owner/constraint/position = b.position)
+FROM ALL_CONSTRAINTS a
+JOIN ALL_CONS_COLUMNS b ON (a.owner / a.constraint_name)
+JOIN ALL_CONSTRAINTS  c ON (c.constraint_name = a.r_constraint_name)
+JOIN ALL_CONS_COLUMNS d ON (d.owner/constraint/position = b.position)
 WHERE a.owner IN (:s0, ...)
   AND a.constraint_type = 'R'
-  AND a.status = 'ENABLED'
 ORDER BY a.owner, a.table_name, a.constraint_name, b.position
 ```
+
+> **Note:** The `AND a.status = 'ENABLED'` filter is intentionally omitted. DISABLED FK constraints are included so that JOIN_PATH edges are computed even when FK enforcement is off in the database.
 
 **Produces:** `List[HasForeignKeyRel]` — each records `source_column_fqn`, `target_column_fqn`, `constraint_name`, `on_delete_action`.
 
@@ -181,7 +184,7 @@ ORDER BY a.owner, a.table_name, a.constraint_name, b.position
 
 ### 2.5 Indexes
 
-**Views:** `DBA_INDEXES` + `DBA_IND_COLUMNS` (two queries)
+**Views:** `ALL_INDEXES` + `ALL_IND_COLUMNS` (two queries)
 
 First fetches index metadata (name, type, uniqueness, tablespace, compression), then all indexed columns sorted by `column_position`. Column names are joined into a CSV string and stored as `IndexNode.columns_list`.
 
@@ -192,7 +195,7 @@ Each `IndexNode` carries: `name`, `schema`, `table_name`, `index_type`, `uniquen
 
 ### 2.6 Constraints
 
-**View:** `DBA_CONSTRAINTS`
+**View:** `ALL_CONSTRAINTS`
 
 Extracts `P` (primary key), `R` (foreign key), `U` (unique), and `C` (check) constraints. Excludes `SYS_`-prefixed system constraints. The `search_condition` for CHECK constraints is stored (max 500 chars).
 
@@ -202,13 +205,17 @@ Extracts `P` (primary key), `R` (foreign key), `U` (unique), and `C` (check) con
 
 ### 2.7 Views & Materialized Views
 
-Uses `DBMS_METADATA.GET_DDL` to retrieve full view DDL, falling back to `SUBSTR(text, 1, 4000)` if that fails. Materialized views are fetched from `DBA_MVIEWS` with refresh mode and last refresh date.
+**View:** `ALL_VIEWS` (always; ignores `use_dba_views` setting)
 
-View-to-table dependencies come from `DBA_DEPENDENCIES`:
+View text is retrieved via `SUBSTR(v.text, 1, 4000)` directly from `ALL_VIEWS`. `DBMS_METADATA.GET_DDL` is not used — it requires per-view privileges that standard app accounts may not have, and per-row errors would fail the entire extraction.
+
+Materialized views are fetched from `ALL_MVIEWS` with refresh mode and last refresh date.
+
+View-to-table dependencies come from `ALL_DEPENDENCIES`:
 
 ```sql
 SELECT d.owner, d.name, d.referenced_owner, d.referenced_name, d.referenced_type
-FROM DBA_DEPENDENCIES d
+FROM ALL_DEPENDENCIES d
 WHERE d.owner IN (:s0, ...)
   AND d.type = 'VIEW'
   AND d.referenced_type IN ('TABLE', 'VIEW', 'MATERIALIZED VIEW')
@@ -220,17 +227,17 @@ WHERE d.owner IN (:s0, ...)
 
 ### 2.8 Procedures / Functions / Packages
 
-**View:** `DBA_PROCEDURES` LEFT JOIN `DBA_OBJECTS`
+**View:** `ALL_PROCEDURES` LEFT JOIN `ALL_OBJECTS`
 
 > **Note:** `ALL_PROCEDURES` in Oracle 23c has no `STATUS` column.
-> The extractor always joins with `DBA_OBJECTS` (or `ALL_OBJECTS`) to retrieve status.
+> The extractor always joins with `ALL_OBJECTS` to retrieve status.
 
 ```sql
 SELECT DISTINCT
     p.owner, p.object_name, p.object_type,
     NVL(o.status, 'VALID') AS status
-FROM DBA_PROCEDURES p
-LEFT JOIN DBA_OBJECTS o
+FROM ALL_PROCEDURES p
+LEFT JOIN ALL_OBJECTS o
     ON  o.owner = p.owner
     AND o.object_name = p.object_name
     AND o.object_type = p.object_type
@@ -244,7 +251,7 @@ WHERE p.owner IN (:s0, ...)
 
 ### 2.9 Synonyms
 
-**View:** `DBA_SYNONYMS`
+**View:** `ALL_SYNONYMS`
 
 Both the owner filter and the `table_owner` filter use the same named bind dict (the two `IN` clauses reference the same `:s0, :s1, ...` variables), so only one call to `_bind_schemas()` is needed.
 
@@ -254,7 +261,7 @@ Both the owner filter and the `table_owner` filter use the same named bind dict 
 
 ### 2.10 Sequences
 
-**View:** `DBA_SEQUENCES`
+**View:** `ALL_SEQUENCES`
 
 Captures `min_value`, `max_value`, `increment_by`, `cache_size`.
 
@@ -281,6 +288,34 @@ After all queries complete, three steps run synchronously:
 1. **`_flag_columns(meta)`** — builds sets of PK FQNs, FK FQNs, and indexed FQNs, then sets `is_pk`, `is_fk`, `is_indexed` booleans on each `ColumnNode`.
 2. **`_build_indexed_column_map(indexes)`** — builds `{owner: {table: [col, ...]}}` for O(1) index lookups.
 3. **`_attach_sample_data(meta)`** — assigns `sample_data` lists to `TableNode` objects and propagates `sample_values` to `ColumnNode` objects.
+
+---
+
+### 2.13 Column Value Cache
+
+**File:** `knowledge_graph/column_value_cache.py`
+
+A lazy, in-process cache for distinct values of low-cardinality ("enum-like") columns. Used to annotate DDL context with actual stored values so agents can generate correct WHERE clause predicates (e.g. mapping "active customers" to `STATUS = 'ACTIVE'`).
+
+**Detection heuristic — `is_likely_enum_column(col_name, data_type, data_length)`:**
+- Column name matches known enum-word patterns: `STATUS`, `TYPE`, `FLAG`, `CODE`, `CATEGORY`, `LEVEL`, `TIER`, `RATING`, `RISK`, `GENDER`, `STAGE`, `PHASE`, etc. (whole-word, prefix, or suffix match against `_ENUM_WORDS`)
+- `CHAR` columns with `data_length <= 5` (Y/N flags, single-char codes)
+- `VARCHAR2` columns with `data_length <= 15`
+
+**Fetch — `get_distinct_values(schema, table, column, config, max_values=30)`:**
+```sql
+SELECT DISTINCT "COLUMN" FROM "SCHEMA"."TABLE"
+WHERE "COLUMN" IS NOT NULL
+ORDER BY 1
+FETCH FIRST 31 ROWS ONLY
+```
+If more than 30 rows are returned the column is treated as non-enum and an empty list is cached. Connection timeout is 5 seconds. Any Oracle error silently caches an empty list and does not retry.
+
+**Factory — `make_value_getter(config)`:** Returns a `(schema, table, column) -> [values]` closure bound to `config`. Suitable for injection into `serialize_context_to_ddl(context, get_values=value_getter)`.
+
+**Cache invalidation — `invalidate_cache()`:** Clears the entire in-process dict. Called after a graph rebuild.
+
+The cache is entirely in-process (a module-level `dict`). Values persist for the lifetime of the process and are not written to disk.
 
 ---
 
@@ -450,6 +485,8 @@ _in_idx:  defaultdict(defaultdict)   # rel_type → {to_id   → [edge_dicts]}
 
 All four structures are kept in sync on every write. Node and edge operations are O(1) average-case hash lookups.
 
+> **Pickle compatibility:** `_out_idx` and `_in_idx` use `defaultdict(_dict_of_lists)` where `_dict_of_lists` is a **module-level** factory function (not a lambda). Lambdas defined inside methods are not picklable; a module-level function is required for the graph cache (`graph_cache.py`) to serialize the graph with `pickle`.
+
 ### Node operations
 
 ```python
@@ -561,15 +598,15 @@ initialize_graph()
 
 | Label | Source | ID format |
 |---|---|---|
-| `Schema` | `DBA_USERS` / distinct owners | `SCHEMA` |
-| `Table` | `DBA_TABLES` | `SCHEMA.TABLE` |
-| `Column` | `DBA_TAB_COLUMNS` | `SCHEMA.TABLE.COLUMN` |
-| `View` | `DBA_VIEWS` / `DBA_MVIEWS` | `SCHEMA.VIEW` |
-| `Index` | `DBA_INDEXES` | `SCHEMA.INDEX_NAME` |
-| `Constraint` | `DBA_CONSTRAINTS` | `SCHEMA.CONSTRAINT_NAME` |
-| `Procedure` | `DBA_PROCEDURES` | `SCHEMA.PROC_NAME` |
-| `Synonym` | `DBA_SYNONYMS` | `SCHEMA.SYNONYM_NAME` |
-| `Sequence` | `DBA_SEQUENCES` | `SCHEMA.SEQUENCE_NAME` |
+| `Schema` | `ALL_USERS` / distinct owners | `SCHEMA` |
+| `Table` | `ALL_TABLES` | `SCHEMA.TABLE` |
+| `Column` | `ALL_TAB_COLUMNS` | `SCHEMA.TABLE.COLUMN` |
+| `View` | `ALL_VIEWS` / `ALL_MVIEWS` | `SCHEMA.VIEW` |
+| `Index` | `ALL_INDEXES` | `SCHEMA.INDEX_NAME` |
+| `Constraint` | `ALL_CONSTRAINTS` | `SCHEMA.CONSTRAINT_NAME` |
+| `Procedure` | `ALL_PROCEDURES` | `SCHEMA.PROC_NAME` |
+| `Synonym` | `ALL_SYNONYMS` | `SCHEMA.SYNONYM_NAME` |
+| `Sequence` | `ALL_SEQUENCES` | `SCHEMA.SEQUENCE_NAME` |
 | `BusinessTerm` | Inferred (glossary builder) | `Humanized Term Label` |
 
 ### All edge (relationship) types
@@ -594,11 +631,102 @@ initialize_graph()
 
 When a user types a natural language query, the agent pipeline uses the graph like this:
 
-1. **Entity extraction** — LLM extracts table hints and business terms from the query.
+1. **Entity extraction** — LLM runs an agentic loop (up to 8 tool calls) extracting table hints and business terms from the query.
 2. **`search_schema(graph, hint)`** — text-searches `Table` and `Column` node names/comments to find matching FQNs.
 3. **`resolve_business_term(graph, term)`** — walks `MAPS_TO` edges to find the column FQNs behind a term like *"risk rating"*.
 4. **`get_context_subgraph(graph, fqns)`** — collects a table's columns, FKs, indexes, and business terms from the graph.
-5. **`serialize_context_to_ddl(context)`** — renders the subgraph as DDL-style text injected into the LLM prompt.
+5. **`serialize_context_to_ddl(context, get_values=value_getter)`** — renders the subgraph as DDL-style text injected into the LLM prompt. When `config` is available, `value_getter` (from `column_value_cache.make_value_getter(config)`) annotates enum-like columns inline: `STATUS VARCHAR2(20) NULL  -- Values(3): 'ACTIVE', 'INACTIVE', 'PENDING'`
 6. **`find_join_path(graph, t1, t2)`** — looks up the pre-computed `JOIN_PATH` edge (or runs BFS on the fly) to tell the LLM exactly which columns to join on.
 7. **LLM generates SQL** — using the DDL context and join hints.
-8. **`get_index_hints(graph, col_fqns)`** — supplies `INDEXED_BY` edges so the LLM can add `/*+ INDEX(...) */` hints.
+8. **Column value resolution** — the SQL generator reads `-- Values(N):` inline comments from the DDL context to write correct WHERE clause literals without guessing stored values.
+9. **`get_index_hints(graph, col_fqns)`** — supplies `INDEXED_BY` edges so the LLM can add `/*+ INDEX(...) */` hints.
+
+### Agent pipeline details
+
+**Intent types:** The pipeline classifies every query into one of five intents before routing:
+
+| Intent | Description |
+|---|---|
+| `DATA_QUERY` | Standard NL-to-SQL query for data retrieval |
+| `SCHEMA_EXPLORE` | Questions about the schema structure |
+| `QUERY_EXPLAIN` | Explain what a SQL query does |
+| `QUERY_REFINE` | Refine a previously generated SQL |
+| `RESULT_FOLLOWUP` | Follow-up question on prior results; bypasses the clarification gate |
+
+**Context builder wiring:** `make_context_builder(graph, config=None)` is called from `agent/pipeline.py`. When `config` is provided, the context builder creates a `value_getter` from `column_value_cache.make_value_getter(config)` and passes it through to `serialize_context_to_ddl`. Without `config`, column value annotation is skipped.
+
+**Entity extractor tools:** `make_entity_extractor(llm, graph, config=None)` exposes 8 tools via a JSON-protocol agentic loop (no LangChain tool-calling API):
+
+| Tool | Purpose |
+|---|---|
+| `search_schema` | Text-search table/column names and comments for matching FQNs |
+| `get_table_detail` | Fetch columns, PKs, FKs for a specific table |
+| `find_join_path` | Look up the pre-computed JOIN_PATH edge between two tables |
+| `resolve_business_term` | Walk MAPS_TO edges to resolve a business term to schema elements |
+| `list_related_tables` | Find tables connected to a given table via JOIN_PATH edges |
+| `query_oracle` | Execute a read-only SELECT against live Oracle (max 20 rows, 10s timeout) |
+| `get_column_values` | Fetch distinct enum values for a column via `column_value_cache` |
+| `submit_entities` | Finalize extracted entities and terminate the agentic loop |
+
+---
+
+## Agent Pipeline Integration
+
+This section describes in detail how the graph is used at query time by the full agent pipeline.
+
+**Pipeline node order:**
+```
+enrich_query → classify_intent → extract_entities → retrieve_schema
+    → check_clarification → [generate_sql | END]
+    → validate_sql → optimize_sql → execute_query → format_result
+```
+
+### Context Builder
+
+`make_context_builder(graph, config=None)` — the `config` parameter enables column value annotation. When `config` is present:
+
+1. `column_value_cache.make_value_getter(config)` creates a closure bound to the Oracle config.
+2. Inside `retrieve_schema`, `serialize_context_to_ddl(context, get_values=value_getter)` is called for each table in the context.
+3. For every column where `is_likely_enum_column(col_name, data_type, data_length)` returns `True`, the cache is queried. On a cache miss, a `SELECT DISTINCT` is fired against Oracle. On a hit, the values are appended inline in the DDL output.
+
+The resulting DDL looks like:
+```sql
+-- TABLE: KYC.CUSTOMERS
+CREATE TABLE KYC.CUSTOMERS (
+    CUSTOMER_ID   NUMBER(10) NOT NULL,
+    STATUS        VARCHAR2(20) NULL  -- Values(3): 'ACTIVE', 'INACTIVE', 'PENDING'
+    RISK_RATING   VARCHAR2(10) NULL  -- Values(4): 'LOW', 'MEDIUM', 'HIGH', 'VERY_HIGH'
+    ...
+)
+```
+
+Both the clarification agent and the SQL generator receive this annotated DDL, so they see the real stored values without any additional Oracle queries.
+
+### Column Value Cache Flow
+
+```
+make_context_builder(graph, config=config)
+    │
+    ├─ column_value_cache.make_value_getter(config)
+    │     └─ lazy SELECT DISTINCT per (schema, table, column)
+    │          first call → hits Oracle, caches result in-process
+    │          subsequent calls → returns cached list instantly
+    │
+    ├─ is_likely_enum_column() heuristic filters which columns to annotate
+    │
+    └─ serialize_context_to_ddl(context, get_values=value_getter)
+           → DDL annotated with: -- Values(N): 'VAL1', 'VAL2', ...
+```
+
+The `get_column_values` entity extractor tool also uses the same module-level cache, so if the agent queries a column's values during entity extraction, the result is already in cache when the context builder runs.
+
+### SQL Validator Graph Integration
+
+`make_sql_validator(graph=graph)` runs six checks on generated SQL before it is executed:
+
+1. Banned keyword detection (no DML/DDL)
+2. SELECT-only enforcement
+3. Cartesian product detection (implicit cross joins)
+4. `sqlglot` parse validation
+5. Alias resolution: builds a mapping of `alias → table_fqn` from the SQL's FROM/JOIN clauses
+6. **Column existence check (graph-backed):** For each `alias.column` reference in the WHERE/SELECT clauses, if `alias` maps to a schema-qualified FQN (e.g. `c` → `KYC.CUSTOMERS`), the validator calls `get_columns_for_table("KYC.CUSTOMERS")` on the graph to verify the column exists. CTE names are excluded. Validation failures trigger SQL regeneration (up to one retry).

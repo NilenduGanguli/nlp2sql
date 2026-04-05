@@ -175,7 +175,7 @@ def build_pipeline(graph, config, llm=None):
     clarify_node = clarify_fn if clarify_fn else _default_clarify
     intent_node  = intent_fn    if intent_fn    else _default_intent
     entity_node  = entity_fn    if entity_fn    else _graph_default_entities
-    schema_node = context_builder.make_context_builder(graph)
+    schema_node = context_builder.make_context_builder(graph, config=config)
     gen_node    = gen_fn       if gen_fn       else _graph_fallback_sql
     valid_node  = sql_validator.make_sql_validator(graph=graph)
     opt_node    = query_optimizer.make_query_optimizer()
