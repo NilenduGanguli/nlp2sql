@@ -265,7 +265,7 @@ export const GraphControls: React.FC<GraphControlsProps> = ({
         <input
           type="range"
           min={20}
-          max={300}
+          max={1000}
           step={10}
           value={limit}
           onChange={(e) => onLimitChange(Number(e.target.value))}
