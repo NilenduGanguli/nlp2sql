@@ -113,7 +113,7 @@ def build_pipeline(graph, config, llm=None):
             from agent.nodes.query_enricher import make_query_enricher
             from agent.nodes.clarification_agent import make_clarification_agent
             intent_fn = intent_classifier.make_intent_classifier(llm)
-            entity_fn = entity_extractor.make_entity_extractor(llm, graph=graph)
+            entity_fn = entity_extractor.make_entity_extractor(llm, graph=graph, config=config)
             gen_fn = sql_generator.make_sql_generator(llm)
             enrich_fn = make_query_enricher(llm)
             clarify_fn = make_clarification_agent(llm)

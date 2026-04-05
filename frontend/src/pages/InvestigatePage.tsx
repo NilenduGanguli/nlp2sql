@@ -1,6 +1,6 @@
-import React, { useState, useEffect, useCallback, useRef } from 'react'
+import React, { useState } from 'react'
 import { useTraceStore } from '../store/traceStore'
-import type { QueryTrace, TraceStep, PromptFile } from '../types'
+import type { QueryTrace, TraceStep } from '../types'
 
 // ── Colours consistent with app theme ──────────────────────────────────────
 const C = {
@@ -9,7 +9,6 @@ const C = {
   panel2: '#242438',
   border: '#3a3a5c',
   accent: '#7c6af7',
-  accentDim: '#4e45a4',
   text: '#e0e0f0',
   muted: '#9090a8',
   success: '#4ade80',
@@ -18,25 +17,7 @@ const C = {
   code: '#1a1a2e',
 }
 
-// ── Node → editable prompt file mapping ───────────────────────────────────
-const NODE_PROMPTS: Record<string, string[]> = {
-  enrich_query:        ['query_enricher_system', 'query_enricher_human'],
-  classify_intent:     ['intent_classifier_system'],
-  extract_entities:    ['entity_extractor_system'],
-  check_clarification: ['clarification_agent_system', 'clarification_agent_human'],
-  generate_sql:        ['sql_generator_system'],
-}
-
-const PROMPT_LABELS: Record<string, string> = {
-  query_enricher_system:       'Query Enricher — System',
-  query_enricher_human:        'Query Enricher — Human Template',
-  intent_classifier_system:    'Intent Classifier — System',
-  entity_extractor_system:     'Entity Extractor — System Template',
-  clarification_agent_system:  'Clarification Agent — System',
-  clarification_agent_human:   'Clarification Agent — Human Template',
-  sql_generator_system:        'SQL Generator — System',
-}
-
+// ── Node labels ──────────────────────────────────────────────────────────────
 const NODE_LABELS: Record<string, string> = {
   enrich_query:        'Query Enricher',
   classify_intent:     'Intent Classifier',
@@ -50,6 +31,15 @@ const NODE_LABELS: Record<string, string> = {
   format_result:       'Result Formatter',
 }
 
+// ── Node → prompt label mapping (display only) ───────────────────────────────
+const NODE_PROMPT_LABELS: Record<string, {system?: string, human?: string}> = {
+  enrich_query:        { system: 'Query Enricher — System Prompt', human: 'Query Enricher — Human Message' },
+  classify_intent:     { system: 'Intent Classifier — System Prompt' },
+  extract_entities:    { system: 'Entity Extractor — System Prompt (with full schema tree)' },
+  check_clarification: { system: 'Clarification Agent — System Prompt' },
+  generate_sql:        { system: 'SQL Generator — System Prompt' },
+}
+
 // ── Op type colours ──────────────────────────────────────────────────────────
 const OP_COLORS: Record<string, string> = {
   search_schema:         '#38bdf8',
@@ -57,6 +47,7 @@ const OP_COLORS: Record<string, string> = {
   find_join_path:        '#fb923c',
   resolve_business_term: '#34d399',
   list_related_tables:   '#60a5fa',
+  query_oracle:          '#f472b6',
   submit_entities:       '#4ade80',
   use_preresolved_fqns:  '#4ade80',
   expand_fk_neighbors:   '#fb923c',
@@ -68,6 +59,7 @@ const OP_HINTS: Record<string, string> = {
   find_join_path:        'FK-based join path between two tables',
   resolve_business_term: 'Mapped business term → schema object',
   list_related_tables:   'FK-reachable tables from a seed table',
+  query_oracle:          'Live Oracle SELECT — actual data from the database',
   submit_entities:       'Final extracted entities + confirmed FQNs',
   use_preresolved_fqns:  'Used FQNs pre-resolved by entity agent (resolution skipped)',
   expand_fk_neighbors:   '1-hop FK neighbour expansion',
@@ -76,7 +68,7 @@ const OP_HINTS: Record<string, string> = {
 // ── Agent-loop iteration parser ───────────────────────────────────────────────
 
 interface AgentIteration {
-  label: string        // "Iteration 1", "Force submit"
+  label: string
   thought: string
   action: string
   args: Record<string, unknown>
@@ -86,7 +78,6 @@ interface AgentIteration {
 
 function parseAgentIterations(raw: string): AgentIteration[] {
   const results: AgentIteration[] = []
-  // Match [Iteration N] or [Force submit] markers
   const delimRe = /\[(Iteration \d+|Force submit)\]\s*/g
   const positions: Array<{ label: string; end: number }> = []
   let m: RegExpExecArray | null
@@ -108,7 +99,7 @@ function parseAgentIterations(raw: string): AgentIteration[] {
         action  = String(parsed.action || '')
         args    = (parsed.args as Record<string, unknown>) || {}
       }
-    } catch { /* unparseable — show raw text */ }
+    } catch { /* show raw text */ }
     results.push({ label, thought, action, args, isFinal: action === 'submit_entities', rawText: text })
   }
   return results
@@ -119,54 +110,6 @@ function parseAgentIterations(raw: string): AgentIteration[] {
 function fmtMs(ms: number) {
   if (ms < 1000) return `${ms.toFixed(0)}ms`
   return `${(ms / 1000).toFixed(2)}s`
-}
-
-function usePrompts() {
-  const [prompts, setPrompts] = useState<Record<string, string>>({})
-
-  const reload = useCallback(() => {
-    fetch('/api/prompts')
-      .then((r) => r.json())
-      .then((data: { prompts: PromptFile[] }) => {
-        const map: Record<string, string> = {}
-        for (const p of data.prompts) map[p.name] = p.content
-        setPrompts(map)
-      })
-      .catch(() => {})
-  }, [])
-
-  useEffect(() => { reload() }, [reload])
-
-  const save = useCallback(async (name: string, content: string): Promise<boolean> => {
-    try {
-      const r = await fetch(`/api/prompts/${name}`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ content }),
-      })
-      if (r.ok) {
-        setPrompts((prev) => ({ ...prev, [name]: content }))
-        return true
-      }
-      return false
-    } catch {
-      return false
-    }
-  }, [])
-
-  const exportZip = useCallback(async () => {
-    const r = await fetch('/api/prompts/export')
-    if (!r.ok) return
-    const blob = await r.blob()
-    const url = URL.createObjectURL(blob)
-    const a = document.createElement('a')
-    a.href = url
-    a.download = 'prompts.zip'
-    a.click()
-    URL.revokeObjectURL(url)
-  }, [])
-
-  return { prompts, reload, save, exportZip }
 }
 
 // ── Sub-components ──────────────────────────────────────────────────────────
@@ -210,6 +153,32 @@ function Badge({ label, color }: { label: string; color: string }) {
   )
 }
 
+/** Read-only prompt display with expand/collapse for long content */
+function PromptView({ label, content }: { label: string; content: string }) {
+  const [expanded, setExpanded] = useState(false)
+  const isLong = content.length > 800
+  return (
+    <div style={{ marginBottom: 10 }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4 }}>
+        <SectionLabel>{label}</SectionLabel>
+        <div style={{ flex: 1 }} />
+        {isLong && (
+          <button
+            onClick={() => setExpanded((v) => !v)}
+            style={{
+              padding: '2px 8px', borderRadius: 4, border: `1px solid ${C.border}`,
+              background: C.panel, color: C.muted, fontSize: 11, cursor: 'pointer',
+            }}
+          >
+            {expanded ? 'collapse' : `expand (${content.length.toLocaleString()} chars)`}
+          </button>
+        )}
+      </div>
+      <Pre text={content} maxH={expanded ? 1600 : isLong ? 160 : 260} />
+    </div>
+  )
+}
+
 // ── Agent loop viewer (for extract_entities) ──────────────────────────────────
 
 function AgentLoopViewer({ rawResponse }: { rawResponse: string }) {
@@ -235,7 +204,6 @@ function AgentLoopViewer({ rawResponse }: { rawResponse: string }) {
               background: it.isFinal ? C.success + '08' : C.code,
             }}
           >
-            {/* Row header */}
             <div
               onClick={() => setExpandedIdx(isOpen ? null : idx)}
               style={{
@@ -243,7 +211,6 @@ function AgentLoopViewer({ rawResponse }: { rawResponse: string }) {
                 padding: '7px 12px', cursor: 'pointer', userSelect: 'none',
               }}
             >
-              {/* Iteration badge */}
               <span style={{
                 flexShrink: 0, marginTop: 1,
                 fontSize: 10, fontWeight: 700, color, background: color + '18',
@@ -252,7 +219,6 @@ function AgentLoopViewer({ rawResponse }: { rawResponse: string }) {
               }}>
                 {it.isFinal ? '✓ FINAL' : it.label}
               </span>
-              {/* Action badge */}
               {it.action && (
                 <span style={{
                   flexShrink: 0, marginTop: 1,
@@ -265,7 +231,12 @@ function AgentLoopViewer({ rawResponse }: { rawResponse: string }) {
                   {it.action}
                 </span>
               )}
-              {/* Thought */}
+              {/* oracle_query: show SQL preview inline */}
+              {it.action === 'query_oracle' && (it.args.sql as string) && (
+                <span style={{ fontSize: 10, color: '#f472b6', fontFamily: 'monospace', fontStyle: 'italic', marginTop: 1, maxWidth: 240, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                  {String(it.args.sql).slice(0, 120)}
+                </span>
+              )}
               <span style={{
                 flex: 1, fontSize: 12, color: it.isFinal ? C.success : C.text,
                 overflow: 'hidden', display: '-webkit-box',
@@ -280,12 +251,10 @@ function AgentLoopViewer({ rawResponse }: { rawResponse: string }) {
               </span>
             </div>
 
-            {/* Expanded: args */}
             {isOpen && (
-              <div style={{ borderTop: `1px solid ${color}22`, padding: '8px 12px', paddingLeft: 12 }}>
+              <div style={{ borderTop: `1px solid ${color}22`, padding: '8px 12px' }}>
                 {it.isFinal ? (
                   <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-                    {/* Tables + FQNs */}
                     {Array.isArray(it.args.tables) && (it.args.tables as string[]).length > 0 && (
                       <div>
                         <span style={{ fontSize: 11, color: C.muted, marginRight: 8 }}>Tables:</span>
@@ -323,7 +292,7 @@ function AgentLoopViewer({ rawResponse }: { rawResponse: string }) {
   )
 }
 
-// ── Confirmed FQN list (for extract_entities output) ─────────────────────────
+// ── Confirmed FQN list ────────────────────────────────────────────────────────
 
 function ConfirmedFqnList({ fqns }: { fqns: string[] }) {
   if (!fqns.length) return null
@@ -346,114 +315,11 @@ function ConfirmedFqnList({ fqns }: { fqns: string[] }) {
   )
 }
 
-interface PromptEditorProps {
-  name: string
-  label: string
-  liveContent: string        // what was actually sent in THIS query (from llm_call)
-  savedContent: string       // current file content
-  onSave: (name: string, content: string) => Promise<boolean>
-}
-
-function PromptEditor({ name, label, liveContent, savedContent, onSave }: PromptEditorProps) {
-  const [editing, setEditing] = useState(false)
-  const [draft, setDraft] = useState(savedContent)
-  const [saving, setSaving] = useState(false)
-  const [saved, setSaved] = useState(false)
-
-  useEffect(() => { setDraft(savedContent) }, [savedContent])
-
-  const handleSave = async () => {
-    setSaving(true)
-    const ok = await onSave(name, draft)
-    setSaving(false)
-    if (ok) {
-      setSaved(true)
-      setEditing(false)
-      setTimeout(() => setSaved(false), 2000)
-    }
-  }
-
-  return (
-    <div style={{ marginBottom: 10 }}>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4 }}>
-        <SectionLabel>{label}</SectionLabel>
-        <div style={{ flex: 1 }} />
-        {!editing && (
-          <button
-            onClick={() => { setEditing(true); setDraft(savedContent) }}
-            style={btnSm(C.accent)}
-          >
-            Edit
-          </button>
-        )}
-        {editing && (
-          <>
-            <button onClick={handleSave} disabled={saving} style={btnSm(C.success)}>
-              {saving ? 'Saving…' : 'Save'}
-            </button>
-            <button onClick={() => setEditing(false)} style={btnSm(C.muted)}>Cancel</button>
-          </>
-        )}
-        {saved && <span style={{ color: C.success, fontSize: 12 }}>✓ Saved</span>}
-      </div>
-
-      {/* Show what was actually sent (if differs from saved) */}
-      {liveContent && liveContent !== savedContent && !editing && (
-        <>
-          <div style={{ fontSize: 11, color: C.warn, marginBottom: 4 }}>
-            ⚠ This query used a different version (file was edited after the query):
-          </div>
-          <Pre text={liveContent} maxH={180} />
-          <div style={{ fontSize: 11, color: C.muted, marginTop: 6, marginBottom: 4 }}>Current file content (editable below):</div>
-          <Pre text={savedContent} maxH={120} />
-        </>
-      )}
-
-      {!liveContent && !editing && <Pre text={savedContent} maxH={200} />}
-      {liveContent && liveContent === savedContent && !editing && <Pre text={liveContent} maxH={200} />}
-
-      {editing && (
-        <textarea
-          value={draft}
-          onChange={(e) => setDraft(e.target.value)}
-          style={{
-            width: '100%',
-            minHeight: 220,
-            background: C.code,
-            border: `1px solid ${C.accent}`,
-            borderRadius: 6,
-            padding: '10px 14px',
-            color: '#cfe0ff',
-            fontSize: 12,
-            fontFamily: 'monospace',
-            lineHeight: 1.55,
-            resize: 'vertical',
-            boxSizing: 'border-box',
-          }}
-        />
-      )}
-    </div>
-  )
-}
-
-function btnSm(color: string) {
-  return {
-    padding: '3px 10px',
-    borderRadius: 4,
-    border: `1px solid ${color}55`,
-    background: color + '18',
-    color,
-    fontSize: 11,
-    cursor: 'pointer',
-    fontWeight: 600,
-  } as React.CSSProperties
-}
-
 function GraphOpsTable({ ops }: { ops: import('../types').TraceGraphOp[] }) {
   if (!ops.length) return null
   return (
     <div>
-      <SectionLabel>Graph Operations</SectionLabel>
+      <SectionLabel>Graph / Tool Operations</SectionLabel>
       <div style={{ overflowX: 'auto' }}>
         <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
           <thead>
@@ -508,30 +374,28 @@ function GraphOpsTable({ ops }: { ops: import('../types').TraceGraphOp[] }) {
   )
 }
 
+// ── Step card (read-only) ────────────────────────────────────────────────────
+
 interface StepCardProps {
   step: TraceStep
-  prompts: Record<string, string>
-  onSavePrompt: (name: string, content: string) => Promise<boolean>
   defaultOpen?: boolean
 }
 
-function StepCard({ step, prompts, onSavePrompt, defaultOpen = false }: StepCardProps) {
+function StepCard({ step, defaultOpen = false }: StepCardProps) {
   const [open, setOpen] = useState(defaultOpen)
   const nodeLabel = NODE_LABELS[step.node] ?? step.node
   const hasError  = !!step.error
   const hasLlm    = !!step.llm_call
-  const promptKeys = NODE_PROMPTS[step.node] ?? []
+  const promptLabels = NODE_PROMPT_LABELS[step.node]
 
-  const isAgentExtractor = step.node === 'extract_entities'
+  const isAgentExtractor  = step.node === 'extract_entities'
   const isSchemaRetrieval = step.node === 'retrieve_schema'
 
-  // Summary values for entity extractor
   const iterations  = isAgentExtractor ? (step.output_summary?.iterations as number | undefined) : undefined
   const confirmedFqns: string[] = isAgentExtractor
     ? ((step.output_summary?.entity_table_fqns as string[]) || [])
     : []
 
-  // Fast-path detection for retrieve_schema
   const usedPreresolved = isSchemaRetrieval &&
     step.graph_ops.some((op) => op.op === 'use_preresolved_fqns')
 
@@ -566,7 +430,6 @@ function StepCard({ step, prompts, onSavePrompt, defaultOpen = false }: StepCard
         )}
         {usedPreresolved && <Badge label="fast path" color={C.success} />}
         <div style={{ flex: 1 }} />
-        {/* Quick summary — different content per node type */}
         {isAgentExtractor && confirmedFqns.length > 0 ? (
           <span style={{ color: C.success, fontSize: 11, maxWidth: 300, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
             {confirmedFqns.join(', ')}
@@ -585,29 +448,25 @@ function StepCard({ step, prompts, onSavePrompt, defaultOpen = false }: StepCard
       {open && (
         <div style={{ padding: '14px 16px', background: C.panel }}>
 
-          {/* Error */}
+          {/* Error banner */}
           {hasError && (
             <div style={{ background: C.error + '18', border: `1px solid ${C.error}55`, borderRadius: 6, padding: '8px 12px', color: C.error, fontSize: 12, marginBottom: 12 }}>
               <strong>Error:</strong> {step.error}
             </div>
           )}
 
-          {/* ── ENTITY EXTRACTOR: agentic investigation ───────────────── */}
+          {/* ── ENTITY EXTRACTOR ─────────────────────────────────────────── */}
           {isAgentExtractor ? (
             <>
-              {/* Editable system prompt */}
-              {promptKeys.map((promptKey) => (
-                <PromptEditor
-                  key={promptKey}
-                  name={promptKey}
-                  label={PROMPT_LABELS[promptKey] ?? promptKey}
-                  liveContent={hasLlm ? step.llm_call!.system_prompt : ''}
-                  savedContent={prompts[promptKey] ?? '(not loaded)'}
-                  onSave={onSavePrompt}
+              {/* Actual system prompt as sent (includes full rendered schema tree) */}
+              {hasLlm && step.llm_call!.system_prompt && (
+                <PromptView
+                  label={promptLabels?.system ?? 'Entity Extractor — System Prompt (as sent)'}
+                  content={step.llm_call!.system_prompt}
                 />
-              ))}
+              )}
 
-              {/* Initial query sent */}
+              {/* Initial query sent to agent */}
               {hasLlm && (
                 <>
                   <SectionLabel>Query Sent to Agent</SectionLabel>
@@ -661,7 +520,7 @@ function StepCard({ step, prompts, onSavePrompt, defaultOpen = false }: StepCard
             </>
           ) : (
             <>
-              {/* ── RETRIEVE SCHEMA: fast-path note ───────────────────── */}
+              {/* ── RETRIEVE SCHEMA: fast-path note ──────────────────────── */}
               {usedPreresolved && (
                 <div style={{
                   background: C.success + '10', border: `1px solid ${C.success}44`,
@@ -677,43 +536,32 @@ function StepCard({ step, prompts, onSavePrompt, defaultOpen = false }: StepCard
                 </div>
               )}
 
-              {/* Editable prompts for this node */}
-              {promptKeys.map((promptKey) => {
-                const isSystem = promptKey.endsWith('_system')
-                const liveContent = hasLlm
-                  ? (isSystem ? step.llm_call!.system_prompt : step.llm_call!.user_prompt)
-                  : ''
-                return (
-                  <PromptEditor
-                    key={promptKey}
-                    name={promptKey}
-                    label={PROMPT_LABELS[promptKey] ?? promptKey}
-                    liveContent={liveContent}
-                    savedContent={prompts[promptKey] ?? '(not loaded)'}
-                    onSave={onSavePrompt}
-                  />
-                )
-              })}
+              {/* Actual system prompt (rendered — not template) */}
+              {hasLlm && step.llm_call!.system_prompt && promptLabels?.system && (
+                <PromptView label={promptLabels.system} content={step.llm_call!.system_prompt} />
+              )}
 
-              {/* For nodes with LLM but no editable prompts show raw */}
-              {hasLlm && promptKeys.length === 0 && (
+              {/* User prompt */}
+              {hasLlm && step.llm_call!.user_prompt && (
+                <PromptView
+                  label={promptLabels?.human ?? 'User Message (as sent)'}
+                  content={step.llm_call!.user_prompt}
+                />
+              )}
+
+              {/* For nodes with LLM but no mapped prompt labels — show both raw */}
+              {hasLlm && !promptLabels && (
                 <>
-                  <SectionLabel>System Prompt</SectionLabel>
-                  <Pre text={step.llm_call!.system_prompt} />
-                  <SectionLabel>User Prompt</SectionLabel>
-                  <Pre text={step.llm_call!.user_prompt} />
+                  {step.llm_call!.system_prompt && (
+                    <PromptView label="System Prompt (as sent)" content={step.llm_call!.system_prompt} />
+                  )}
+                  {step.llm_call!.user_prompt && (
+                    <PromptView label="User Message (as sent)" content={step.llm_call!.user_prompt} />
+                  )}
                 </>
               )}
 
-              {/* User prompt (read-only, when only system prompt is editable) */}
-              {hasLlm && promptKeys.length > 0 && promptKeys.every((k) => k.endsWith('_system')) && (
-                <>
-                  <SectionLabel>Actual User Message Sent</SectionLabel>
-                  <Pre text={step.llm_call!.user_prompt} maxH={180} />
-                </>
-              )}
-
-              {/* LLM response */}
+              {/* LLM raw response */}
               {hasLlm && step.llm_call!.raw_response && (
                 <>
                   <SectionLabel>LLM Raw Response</SectionLabel>
@@ -756,29 +604,6 @@ function StepCard({ step, prompts, onSavePrompt, defaultOpen = false }: StepCard
 
 export const InvestigatePage: React.FC = () => {
   const { traces, activeTraceId, pendingSteps, setActiveTrace } = useTraceStore()
-  const { prompts, save: savePrompt, exportZip } = usePrompts()
-  const [rebuildStatus, setRebuildStatus] = useState<'idle' | 'rebuilding' | 'done' | 'error'>('idle')
-  const rebuildTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
-
-  const handleRebuild = useCallback(async () => {
-    setRebuildStatus('rebuilding')
-    try {
-      const r = await fetch('/api/admin/rebuild-pipeline', { method: 'POST' })
-      if (r.ok) {
-        if (rebuildTimerRef.current) clearTimeout(rebuildTimerRef.current)
-        rebuildTimerRef.current = setTimeout(() => {
-          setRebuildStatus('done')
-          rebuildTimerRef.current = setTimeout(() => setRebuildStatus('idle'), 3000)
-        }, 2000)
-      } else {
-        setRebuildStatus('error')
-        rebuildTimerRef.current = setTimeout(() => setRebuildStatus('idle'), 5000)
-      }
-    } catch {
-      setRebuildStatus('error')
-      rebuildTimerRef.current = setTimeout(() => setRebuildStatus('idle'), 5000)
-    }
-  }, [])
 
   const activeTrace: QueryTrace | null = traces.find((t) => t.id === activeTraceId) ?? (traces[0] ?? null)
   const displaySteps: TraceStep[] = activeTrace
@@ -790,12 +615,19 @@ export const InvestigatePage: React.FC = () => {
   return (
     <div style={{ display: 'flex', height: '100%', overflow: 'hidden', background: C.bg, color: C.text }}>
 
-      {/* ── Left: query history list ── */}
+      {/* ── Left: query history list (read-only) ── */}
       <div style={{ width: 260, flexShrink: 0, borderRight: `1px solid ${C.border}`, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
         <div style={{ padding: '12px 14px', borderBottom: `1px solid ${C.border}`, fontWeight: 700, fontSize: 13, color: C.text }}>
           Query Traces
           <span style={{ float: 'right', color: C.muted, fontSize: 11, fontWeight: 400 }}>{traces.length} saved</span>
         </div>
+
+        {/* Info banner */}
+        <div style={{ padding: '8px 14px', background: C.accent + '0a', borderBottom: `1px solid ${C.border}22`, fontSize: 11, color: C.muted, lineHeight: 1.5 }}>
+          Read-only view. Every query trace shows the <strong style={{ color: C.text }}>actual prompts as sent</strong> to the LLM (fully rendered — not templates).
+          <br />To edit prompts, use the <strong style={{ color: C.accent }}>Prompt Studio</strong> tab.
+        </div>
+
         <div style={{ flex: 1, overflowY: 'auto' }}>
           {traces.length === 0 && (
             <div style={{ padding: 20, color: C.muted, fontSize: 12 }}>Run a query in the Chat tab to capture its trace here.</div>
@@ -827,31 +659,6 @@ export const InvestigatePage: React.FC = () => {
             )
           })}
         </div>
-
-        {/* Buttons */}
-        <div style={{ padding: 12, borderTop: `1px solid ${C.border}`, display: 'flex', flexDirection: 'column', gap: 6 }}>
-          <button
-            onClick={handleRebuild}
-            disabled={rebuildStatus === 'rebuilding'}
-            style={{
-              ...btnSm(rebuildStatus === 'done' ? C.success : rebuildStatus === 'error' ? C.error : C.warn),
-              width: '100%', textAlign: 'center', padding: '7px 0',
-              cursor: rebuildStatus === 'rebuilding' ? 'not-allowed' : 'pointer',
-            }}
-            title="Rebuild pipeline so saved prompt edits take effect"
-          >
-            {rebuildStatus === 'rebuilding' ? '⏳ Rebuilding…'
-              : rebuildStatus === 'done' ? '✓ Pipeline Rebuilt'
-              : rebuildStatus === 'error' ? '✗ Rebuild Failed'
-              : 'Rebuild Pipeline'}
-          </button>
-          <button
-            onClick={exportZip}
-            style={{ ...btnSm(C.accent), width: '100%', textAlign: 'center', padding: '7px 0' }}
-          >
-            ⬇ Export Prompts (ZIP)
-          </button>
-        </div>
       </div>
 
       {/* ── Right: trace details ── */}
@@ -862,7 +669,7 @@ export const InvestigatePage: React.FC = () => {
             <div style={{ fontSize: 16, fontWeight: 600, color: C.text, marginBottom: 8 }}>Investigate Query</div>
             <div style={{ fontSize: 13 }}>
               Every query you run will have its full processing lifecycle recorded here:<br />
-              prompts, LLM calls, graph searches, SQL generation, validation, and execution.
+              <strong style={{ color: C.text }}>actual rendered prompts</strong>, LLM calls, graph searches, Oracle tool calls, SQL generation, validation, and execution.
             </div>
           </div>
         )}
@@ -892,11 +699,13 @@ export const InvestigatePage: React.FC = () => {
                   )}
                   {(() => {
                     const totalOps = activeTrace.steps.reduce((sum, s) => sum + s.graph_ops.length, 0)
+                    const oracleCalls = activeTrace.steps.reduce((sum, s) => sum + s.graph_ops.filter(o => o.op === 'query_oracle').length, 0)
                     const agentStep = activeTrace.steps.find((s) => s.node === 'extract_entities')
                     const iterations = agentStep?.output_summary?.iterations as number | undefined
                     return (
                       <>
-                        {totalOps > 0 && <Badge label={`${totalOps} graph ops`} color="#38bdf8" />}
+                        {totalOps > 0 && <Badge label={`${totalOps} graph/tool ops`} color="#38bdf8" />}
+                        {oracleCalls > 0 && <Badge label={`${oracleCalls} oracle queries`} color="#f472b6" />}
                         {iterations != null && <Badge label={`entity agent: ${iterations} iterations`} color={C.accent} />}
                       </>
                     )
@@ -910,8 +719,6 @@ export const InvestigatePage: React.FC = () => {
               <StepCard
                 key={`${step.node}-${i}`}
                 step={step}
-                prompts={prompts}
-                onSavePrompt={savePrompt}
                 defaultOpen={
                   step.node === 'generate_sql' ||
                   step.node === 'extract_entities' ||

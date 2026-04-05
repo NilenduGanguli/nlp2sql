@@ -195,6 +195,65 @@ def _knowledge_file_path() -> str:
     return os.getenv("KYC_KNOWLEDGE_FILE", "kyc_business_knowledge.txt")
 
 
+@router.get("/agent-config")
+async def get_agent_config():
+    """
+    Return the static agent/pipeline configuration for display in the Prompt Studio.
+    Includes pipeline DAG structure, entity extractor tool specs, and tuneable constants.
+    """
+    from agent.nodes.entity_extractor import MAX_TOOL_CALLS, _ORACLE_MAX_ROWS
+
+    pipeline_nodes = [
+        {"node": "enrich_query",        "label": "Query Enricher",           "prompt": "query_enricher_system",       "type": "llm",   "description": "Expands domain-sparse queries with KYC business knowledge"},
+        {"node": "classify_intent",     "label": "Intent Classifier",        "prompt": "intent_classifier_system",    "type": "llm",   "description": "Classifies query as DATA_QUERY / SCHEMA_EXPLORE / QUERY_EXPLAIN / QUERY_REFINE"},
+        {"node": "extract_entities",    "label": "Entity Extractor",         "prompt": "entity_extractor_system",     "type": "agent", "description": f"Agentic ReAct loop; up to {MAX_TOOL_CALLS} tool calls; resolves tables, columns, conditions"},
+        {"node": "retrieve_schema",     "label": "Schema Retrieval",         "prompt": None,                          "type": "graph", "description": "Builds DDL context from entity FQNs + join-path hints"},
+        {"node": "check_clarification", "label": "Clarification Check",      "prompt": "clarification_agent_system",  "type": "llm",   "description": "Checks if query is still ambiguous; emits clarification event if so"},
+        {"node": "generate_sql",        "label": "SQL Generator",            "prompt": "sql_generator_system",        "type": "llm",   "description": "Generates Oracle SQL from DDL context + enriched query"},
+        {"node": "validate_sql",        "label": "SQL Validator",            "prompt": None,                          "type": "rule",  "description": "Rule-based: sqlglot parse, blocked keywords, Cartesian product guard"},
+        {"node": "optimize_sql",        "label": "SQL Optimizer",            "prompt": None,                          "type": "rule",  "description": "Injects FETCH FIRST row limit, strips trailing semi-colon, adds index hints"},
+        {"node": "execute_query",       "label": "Query Executor",           "prompt": None,                          "type": "oracle","description": "Runs final SQL against live Oracle; returns columns + rows"},
+        {"node": "format_result",       "label": "Result Formatter",         "prompt": None,                          "type": "rule",  "description": "Serialises result + trace for SSE transport"},
+    ]
+
+    pipeline_edges = [
+        {"from": "enrich_query",        "to": "classify_intent",     "condition": "always"},
+        {"from": "classify_intent",     "to": "extract_entities",    "condition": "always"},
+        {"from": "extract_entities",    "to": "retrieve_schema",     "condition": "always"},
+        {"from": "retrieve_schema",     "to": "check_clarification", "condition": "always"},
+        {"from": "check_clarification", "to": "END",                 "condition": "need_clarification=True AND no conversation history"},
+        {"from": "check_clarification", "to": "generate_sql",        "condition": "need_clarification=False OR conversation history present"},
+        {"from": "generate_sql",        "to": "validate_sql",        "condition": "always"},
+        {"from": "validate_sql",        "to": "generate_sql",        "condition": "validation_passed=False AND retry_count < 3"},
+        {"from": "validate_sql",        "to": "optimize_sql",        "condition": "validation_passed=True OR retry_count >= 3"},
+        {"from": "optimize_sql",        "to": "execute_query",       "condition": "always"},
+        {"from": "execute_query",       "to": "format_result",       "condition": "always"},
+        {"from": "format_result",       "to": "END",                 "condition": "always"},
+    ]
+
+    entity_extractor_tools = [
+        {"name": "search_schema",         "color": "#38bdf8", "description": "Fuzzy/keyword search across table names and column names"},
+        {"name": "get_table_detail",      "color": "#a78bfa", "description": "Full column list with data types, PKs, FK references for one table"},
+        {"name": "find_join_path",        "color": "#fb923c", "description": "FK-based join columns between two specific tables"},
+        {"name": "resolve_business_term", "color": "#34d399", "description": "Map business/domain language (e.g. 'KYC check') to schema objects"},
+        {"name": "list_related_tables",   "color": "#60a5fa", "description": "List all FK-reachable tables from a seed table"},
+        {"name": "query_oracle",          "color": "#f472b6", "description": f"Execute a read-only SELECT against the live Oracle DB (max {_ORACLE_MAX_ROWS} rows). Use to inspect actual data values, check filter conditions, or query data dictionary views."},
+        {"name": "submit_entities",       "color": "#4ade80", "description": "Finalise entity extraction — tables, columns, conditions, confirmed FQNs"},
+    ]
+
+    return {
+        "pipeline_nodes": pipeline_nodes,
+        "pipeline_edges": pipeline_edges,
+        "entity_extractor": {
+            "max_tool_calls": MAX_TOOL_CALLS,
+            "oracle_max_rows": _ORACLE_MAX_ROWS,
+            "tools": entity_extractor_tools,
+            "protocol": "JSON {thought, action, args} — works with all LLM providers",
+            "fallback": "keyword matching when LLM or agentic loop unavailable",
+        },
+    }
+
+
 @router.get("/knowledge-file", response_model=KnowledgeFileResponse)
 async def get_knowledge_file(config=Depends(get_config)):
     """Return the current business knowledge file content."""

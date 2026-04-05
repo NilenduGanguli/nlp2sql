@@ -149,6 +149,15 @@ async def lifespan(app: FastAPI):
     app.state.oracle_connected = False
     app.state.graph_llm_enhanced = False
 
+    # Restore any user-edited prompts from the persistent volume before pipeline build
+    try:
+        from agent.prompts import load_persisted_prompts
+        restored = load_persisted_prompts()
+        if restored:
+            logger.info("Restored %d persisted prompt(s) from volume", restored)
+    except Exception as exc:
+        logger.warning("Could not restore persisted prompts: %s", exc)
+
     # LLM client
     llm = None
     provider = getattr(config, "llm_provider", "").lower()

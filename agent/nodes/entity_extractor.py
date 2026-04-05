@@ -38,9 +38,72 @@ logger = logging.getLogger(__name__)
 
 # Maximum tool invocations before a forced submit
 MAX_TOOL_CALLS = 8
+# Maximum rows returned by the oracle_query tool (keep low — for reasoning only)
+_ORACLE_MAX_ROWS = 20
 # Tables shown in the hierarchical schema tree (grouped by tier)
 _MAX_TREE_TABLES = 60
 # Maximum chars for a single tool result injected back into the conversation
+
+
+# ── Oracle live-query helper ──────────────────────────────────────────────────
+
+_ORACLE_BLOCKED_KEYWORDS = re.compile(
+    r"\b(INSERT|UPDATE|DELETE|DROP|CREATE|ALTER|TRUNCATE|GRANT|REVOKE|EXECUTE|MERGE)\b",
+    re.IGNORECASE,
+)
+
+
+def _execute_oracle_query(sql: str, config) -> str:
+    """
+    Execute a read-only SELECT against the live Oracle database and return a
+    human-readable text table.  Safety-guarded: only SELECT/WITH queries,
+    no DML/DDL keywords, max _ORACLE_MAX_ROWS rows, 10 s call timeout.
+    """
+    if config is None:
+        return "Oracle not configured — query_oracle tool unavailable."
+
+    cleaned = sql.strip().rstrip(";")
+    upper = cleaned.upper().lstrip()
+    if not (upper.startswith("SELECT") or upper.startswith("WITH")):
+        return "Only SELECT or WITH queries are allowed via query_oracle."
+    if _ORACLE_BLOCKED_KEYWORDS.search(cleaned):
+        return "Blocked: query contains a write/DDL keyword. Only read-only queries permitted."
+
+    try:
+        import oracledb     # already available — same dep as query_executor
+        oracle_cfg = getattr(config, "oracle", config)
+        conn = oracledb.connect(
+            user=getattr(oracle_cfg, "user", None) or getattr(oracle_cfg, "oracle_user", ""),
+            password=getattr(oracle_cfg, "password", None) or getattr(oracle_cfg, "oracle_password", ""),
+            dsn=getattr(oracle_cfg, "dsn", None) or getattr(oracle_cfg, "oracle_dsn", ""),
+        )
+        cur = conn.cursor()
+        cur.callTimeout = 10_000        # 10 s hard timeout
+        cur.execute(cleaned)
+        cols = [d[0] for d in cur.description] if cur.description else []
+        rows = cur.fetchmany(_ORACLE_MAX_ROWS)
+        conn.close()
+
+        if not rows:
+            return "Query returned no rows."
+
+        # Build a compact text table
+        str_rows = [[str(v) if v is not None else "NULL" for v in row] for row in rows]
+        widths = [
+            max(len(c), max((len(r[i]) for r in str_rows), default=0))
+            for i, c in enumerate(cols)
+        ]
+        sep    = "  ".join("-" * w for w in widths)
+        header = "  ".join(c.ljust(widths[i]) for i, c in enumerate(cols))
+        lines  = [header, sep] + [
+            "  ".join(v.ljust(widths[i]) for i, v in enumerate(r)) for r in str_rows
+        ]
+        note = f"\n({len(rows)} row{'s' if len(rows) != 1 else ''}; max {_ORACLE_MAX_ROWS} shown)"
+        return "\n".join(lines) + note
+
+    except Exception as exc:
+        logger.warning("query_oracle tool error: %s", exc)
+        return f"Oracle query error: {exc}"
 
 
 def _safe_format(template: str, **kwargs) -> str:
@@ -184,9 +247,10 @@ def _call_graph_tool(
     action: str,
     args: Dict,
     trace: TraceStep,
+    config=None,
 ) -> Tuple[str, List]:
     """
-    Execute a graph tool and return (formatted_result_str, raw_results).
+    Execute a graph or oracle tool and return (formatted_result_str, raw_results).
     Adds a graph_op entry to the trace.
     """
     from knowledge_graph.traversal import (
@@ -231,6 +295,12 @@ def _call_graph_tool(
             fqn    = args.get("table_fqn", "").upper()
             result = _fmt_related_tables(graph, fqn)
             trace.add_graph_op("list_related_tables", args, [])
+            return result, []
+
+        elif action == "query_oracle":
+            sql    = args.get("sql", "").strip()
+            result = _execute_oracle_query(sql, config)
+            trace.add_graph_op("query_oracle", {"sql": sql[:200]}, [])
             return result, []
 
         else:
@@ -451,6 +521,10 @@ RULES:
 - Include ALL tables needed for JOINs (not just the primary answer table)
 - If a term could refer to multiple tables, use get_table_detail to check columns and decide
 - Use list_related_tables or find_join_path to discover required joins
+- Use query_oracle when you need to see actual data values — e.g., what STATUS codes exist,
+  what date ranges are present, how many rows a table has, or what a column's typical values look like
+- Use query_oracle on Oracle data dictionary views (ALL_TABLES, ALL_COLUMNS, ALL_CONSTRAINTS)
+  when the user asks about schema structure or metadata
 - Prefer Oracle UPPERCASE names. table_fqns must be SCHEMA.TABLE format
 - You have up to {max_calls} tool calls; use them wisely but do not stop early
 ─────────────────────────────────────────────────────
@@ -477,7 +551,14 @@ _TOOLS_SPEC = """\
    List all tables reachable from a given table via FK relationships.
    Args: {"table_fqn": "SCHEMA.TABLE_NAME"}
 
-6. submit_entities
+6. query_oracle
+   Execute a read-only SELECT against the live Oracle database to inspect actual data.
+   Use this to check real column values, see example rows, understand data distributions,
+   verify what values exist in a filter column, or confirm a table has the data you need.
+   Only SELECT or WITH queries allowed; max 20 rows returned.
+   Args: {"sql": "SELECT STATUS, COUNT(*) FROM KYC.KYC_STATUS GROUP BY STATUS"}
+
+7. submit_entities
    Finalise your findings. MUST include table_fqns (fully-qualified).
    See response format above."""
 
@@ -536,13 +617,21 @@ def _build_schema_summary(graph) -> Tuple[str, List[str], List[str]]:
     return tree, names, schemas
 
 
-def make_entity_extractor(llm, graph=None) -> Callable[[AgentState], AgentState]:
+def make_entity_extractor(llm, graph=None, config=None) -> Callable[[AgentState], AgentState]:
     """
     Factory: returns a LangGraph node that runs an agentic entity-extraction loop.
 
     The LLM receives a hierarchical schema tree and can call knowledge-graph
-    tools (search_schema, get_table_detail, find_join_path, …) before settling
-    on the final list of entities and confirmed table FQNs.
+    tools (search_schema, get_table_detail, find_join_path, …) and the live
+    Oracle database (query_oracle) before settling on the final list of entities
+    and confirmed table FQNs.
+
+    Parameters
+    ----------
+    config : AppConfig | None
+        When provided, enables the query_oracle tool so the agent can run
+        read-only SELECT queries against the live database to inspect actual
+        data values, check filter conditions, or query Oracle metadata views.
     """
     all_table_names: List[str] = []
     system_prompt: str = ""
@@ -646,7 +735,7 @@ def make_entity_extractor(llm, graph=None) -> Callable[[AgentState], AgentState]
                     break
 
                 # Execute graph tool
-                tool_result_str, raw = _call_graph_tool(graph, action, args, trace)
+                tool_result_str, raw = _call_graph_tool(graph, action, args, trace, config=config)
                 if len(tool_result_str) > _MAX_TOOL_RESULT_CHARS:
                     tool_result_str = tool_result_str[:_MAX_TOOL_RESULT_CHARS] + "\n… (truncated)"
 
