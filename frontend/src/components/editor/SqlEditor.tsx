@@ -1,5 +1,5 @@
-import React from 'react'
-import MonacoEditor from '@monaco-editor/react'
+import React, { useRef, useEffect } from 'react'
+import MonacoEditor, { type OnMount } from '@monaco-editor/react'
 
 interface SqlEditorProps {
   value: string
@@ -14,9 +14,21 @@ export const SqlEditor: React.FC<SqlEditorProps> = ({
   onRun,
   height = '100%',
 }) => {
+  // Keep a stable ref so the Monaco command always calls the latest onRun
+  // (avoids stale closure — onMount fires once, but sql changes over time)
+  const onRunRef = useRef(onRun)
+  useEffect(() => { onRunRef.current = onRun }, [onRun])
+
   const prefersDark =
     typeof window !== 'undefined' &&
     window.matchMedia('(prefers-color-scheme: dark)').matches
+
+  const handleMount: OnMount = (editor, monaco) => {
+    editor.addCommand(
+      monaco.KeyMod.CtrlCmd | monaco.KeyCode.Enter,
+      () => onRunRef.current?.(),
+    )
+  }
 
   return (
     <MonacoEditor
@@ -37,11 +49,7 @@ export const SqlEditor: React.FC<SqlEditorProps> = ({
         renderWhitespace: 'selection',
         quickSuggestions: false,
       }}
-      onMount={(editor, monaco) => {
-        if (onRun) {
-          editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.Enter, onRun)
-        }
-      }}
+      onMount={handleMount}
     />
   )
 }

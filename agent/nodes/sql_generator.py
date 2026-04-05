@@ -82,22 +82,40 @@ def make_sql_generator(llm) -> Callable[[AgentState], AgentState]:
         conversation_history = state.get("conversation_history", [])
         validation_errors = state.get("validation_errors", [])
         retry_count = state.get("retry_count", 0)
+        intent = state.get("intent", "DATA_QUERY")
         _trace = list(state.get("_trace", []))
         trace = TraceStep("generate_sql", "generating")
 
         logger.debug(
-            "SQL generation attempt %d for: %r", retry_count + 1, user_input[:80]
+            "SQL generation attempt %d for: %r (intent=%s)", retry_count + 1, user_input[:80], intent
         )
 
-        # Build conversation context (last 2 turns)
+        is_followup = intent == "RESULT_FOLLOWUP"
+
+        # Build conversation context
+        # RESULT_FOLLOWUP gets more turns so the LLM sees the prior SQL clearly
+        history_turns = 6 if is_followup else 2
         history_text = ""
+        prev_sql = ""
         if conversation_history:
-            recent = conversation_history[-2:]
+            recent = conversation_history[-history_turns:]
             history_lines = []
             for turn in recent:
                 role = turn.get("role", "user")
-                content = turn.get("content", "")[:300]
+                content = turn.get("content", "")[:400]
                 history_lines.append(f"{role.upper()}: {content}")
+                # Try to extract previous SQL from assistant messages
+                if role == "assistant" and not prev_sql:
+                    try:
+                        import json as _json
+                        parsed = _json.loads(turn.get("content", ""))
+                        if isinstance(parsed, dict) and parsed.get("sql"):
+                            prev_sql = parsed["sql"]
+                    except Exception:
+                        # Try regex fallback
+                        m = re.search(r'"sql"\s*:\s*"(SELECT[^"]+)"', turn.get("content", ""), re.IGNORECASE)
+                        if m:
+                            prev_sql = m.group(1)
             history_text = "\n".join(history_lines)
 
         # Build user message
@@ -107,6 +125,10 @@ def make_sql_generator(llm) -> Callable[[AgentState], AgentState]:
         ]
         if history_text:
             user_msg_parts.append(f"\nConversation context:\n{history_text}")
+        if is_followup and prev_sql:
+            user_msg_parts.append(
+                f"\nPrevious SQL (the query the user is referring to):\n```sql\n{prev_sql}\n```"
+            )
         if retry_count > 0 and validation_errors:
             error_list = "\n".join(f"  - {e}" for e in validation_errors)
             user_msg_parts.append(

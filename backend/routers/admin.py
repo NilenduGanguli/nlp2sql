@@ -205,12 +205,12 @@ async def get_agent_config():
 
     pipeline_nodes = [
         {"node": "enrich_query",        "label": "Query Enricher",           "prompt": "query_enricher_system",       "type": "llm",   "description": "Expands domain-sparse queries with KYC business knowledge"},
-        {"node": "classify_intent",     "label": "Intent Classifier",        "prompt": "intent_classifier_system",    "type": "llm",   "description": "Classifies query as DATA_QUERY / SCHEMA_EXPLORE / QUERY_EXPLAIN / QUERY_REFINE"},
+        {"node": "classify_intent",     "label": "Intent Classifier",        "prompt": "intent_classifier_system",    "type": "llm",   "description": "Classifies query as DATA_QUERY / SCHEMA_EXPLORE / QUERY_EXPLAIN / QUERY_REFINE / RESULT_FOLLOWUP (uses conversation history for context)"},
         {"node": "extract_entities",    "label": "Entity Extractor",         "prompt": "entity_extractor_system",     "type": "agent", "description": f"Agentic ReAct loop; up to {MAX_TOOL_CALLS} tool calls; resolves tables, columns, conditions"},
         {"node": "retrieve_schema",     "label": "Schema Retrieval",         "prompt": None,                          "type": "graph", "description": "Builds DDL context from entity FQNs + join-path hints"},
         {"node": "check_clarification", "label": "Clarification Check",      "prompt": "clarification_agent_system",  "type": "llm",   "description": "Checks if query is still ambiguous; emits clarification event if so"},
         {"node": "generate_sql",        "label": "SQL Generator",            "prompt": "sql_generator_system",        "type": "llm",   "description": "Generates Oracle SQL from DDL context + enriched query"},
-        {"node": "validate_sql",        "label": "SQL Validator",            "prompt": None,                          "type": "rule",  "description": "Rule-based: sqlglot parse, blocked keywords, Cartesian product guard"},
+        {"node": "validate_sql",        "label": "SQL Validator",            "prompt": None,                          "type": "rule",  "description": "Rule-based: sqlglot parse, blocked keywords, Cartesian product guard, column existence check (graph-powered)"},
         {"node": "optimize_sql",        "label": "SQL Optimizer",            "prompt": None,                          "type": "rule",  "description": "Injects FETCH FIRST row limit, strips trailing semi-colon, adds index hints"},
         {"node": "execute_query",       "label": "Query Executor",           "prompt": None,                          "type": "oracle","description": "Runs final SQL against live Oracle; returns columns + rows"},
         {"node": "format_result",       "label": "Result Formatter",         "prompt": None,                          "type": "rule",  "description": "Serialises result + trace for SSE transport"},

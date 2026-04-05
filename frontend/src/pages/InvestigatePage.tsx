@@ -723,6 +723,7 @@ export const InvestigatePage: React.FC = () => {
                   step.node === 'generate_sql' ||
                   step.node === 'extract_entities' ||
                   step.node === 'retrieve_schema' ||
+                  (step.node === 'validate_sql' && step.output_summary?.validation_passed === false) ||
                   !!(step.error)
                 }
               />

@@ -9,6 +9,7 @@ Validation checks:
   3. Dangerous built-ins / injection vectors
   4. Cartesian product detection (multiple tables in FROM without JOIN)
   5. Empty SQL guard
+  6. Column existence check (requires knowledge graph)
 
 Sets state["validation_passed"] and state["validation_errors"].
 """
@@ -17,7 +18,7 @@ from __future__ import annotations
 
 import logging
 import re
-from typing import Callable, List
+from typing import Callable, Dict, List, Optional
 
 from agent.state import AgentState
 from agent.trace import TraceStep
@@ -64,9 +65,107 @@ _CARTESIAN_PATTERN = re.compile(
 )
 
 
-def make_sql_validator() -> Callable[[AgentState], AgentState]:
+def _check_column_existence(sql: str, graph) -> List[str]:
+    """
+    Check that alias.column references in the SQL actually exist in the
+    referenced tables according to the knowledge graph.
+
+    Returns a list of error strings (empty = all OK).
+    Only validates columns that are explicitly qualified with a table alias
+    that maps to a schema-qualified table (e.g. ``c.CUSTOMER_ID`` where
+    ``c`` is an alias for ``KYC.CUSTOMERS``).
+    """
+    if graph is None:
+        return []
+    try:
+        import sqlglot
+        import sqlglot.expressions as exp
+
+        statement = sqlglot.parse_one(sql, read="oracle")
+        if statement is None:
+            return []
+
+        # Collect CTE names so we don't try to look them up in the graph
+        cte_names: set = set()
+        for cte in statement.find_all(exp.CTE):
+            if cte.alias:
+                cte_names.add(cte.alias.upper())
+
+        # Build alias → FQN from FROM / JOIN references that have a schema prefix
+        alias_to_fqn: Dict[str, str] = {}
+        for table_expr in statement.find_all(exp.Table):
+            t_name = (table_expr.name or "").upper()
+            if not t_name or t_name in cte_names:
+                continue
+            t_schema = (table_expr.db or "").upper()
+            if not t_schema:
+                continue  # no schema prefix → can't map to a graph FQN
+            fqn = f"{t_schema}.{t_name}"
+            # Register both the alias and the bare table name
+            alias = (table_expr.alias or "").upper()
+            alias_to_fqn[alias or t_name] = fqn
+            if alias:
+                alias_to_fqn[t_name] = fqn
+
+        if not alias_to_fqn:
+            return []
+
+        # Lazily load column names per FQN
+        fqn_col_cache: Dict[str, Optional[frozenset]] = {}
+
+        def _get_col_names(fqn: str) -> Optional[frozenset]:
+            if fqn not in fqn_col_cache:
+                try:
+                    from knowledge_graph.traversal import get_columns_for_table
+                    cols = get_columns_for_table(graph, fqn)
+                    fqn_col_cache[fqn] = (
+                        frozenset(c["name"].upper() for c in cols) if cols else None
+                    )
+                except Exception:
+                    fqn_col_cache[fqn] = None
+            return fqn_col_cache[fqn]
+
+        errors: List[str] = []
+        for col_expr in statement.find_all(exp.Column):
+            qualifier = (col_expr.table or "").upper()
+            if not qualifier:
+                continue  # unqualified column — can't validate
+            fqn = alias_to_fqn.get(qualifier)
+            if not fqn:
+                continue  # alias not mapped to a graph table
+            col_name = (col_expr.name or "").upper()
+            if not col_name or col_name == "*":
+                continue  # wildcard or empty — OK
+            known_cols = _get_col_names(fqn)
+            if known_cols is None:
+                continue  # table not found in graph, skip
+            if col_name not in known_cols:
+                sample = sorted(known_cols)[:10]
+                hint = ", ".join(sample)
+                suffix = " (and more)" if len(known_cols) > 10 else ""
+                errors.append(
+                    f"Column '{col_name}' does not exist in {fqn}. "
+                    f"Available columns: {hint}{suffix}. "
+                    "Please correct the column name and regenerate the SQL."
+                )
+
+        return errors
+
+    except ImportError:
+        return []  # sqlglot not available
+    except Exception as exc:
+        logger.debug("Column existence check error: %s", exc)
+        return []
+
+
+def make_sql_validator(graph=None) -> Callable[[AgentState], AgentState]:
     """
     Factory: returns a LangGraph node function that validates Oracle SQL.
+
+    Parameters
+    ----------
+    graph : KnowledgeGraph | None
+        When provided, enables column-existence validation (check 6).
 
     Returns
     -------
@@ -152,6 +251,13 @@ def make_sql_validator() -> Callable[[AgentState], AgentState]:
         sql_upper = sql.upper()
         if "FROM" not in sql_upper:
             errors.append("SQL does not contain a FROM clause.")
+
+        # ------------------------------------------------------------------ #
+        # 6. Column existence check (graph-powered, only when graph provided)
+        # ------------------------------------------------------------------ #
+        if not errors:  # skip if already failing — prevents redundant noise
+            col_errors = _check_column_existence(sql, graph)
+            errors.extend(col_errors)
 
         # ------------------------------------------------------------------ #
         # Result

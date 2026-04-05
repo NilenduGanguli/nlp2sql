@@ -23,6 +23,7 @@ class Intent(str, Enum):
     SCHEMA_EXPLORE = "SCHEMA_EXPLORE"
     QUERY_EXPLAIN = "QUERY_EXPLAIN"
     QUERY_REFINE = "QUERY_REFINE"
+    RESULT_FOLLOWUP = "RESULT_FOLLOWUP"
 
 
 class AgentState(TypedDict):
@@ -51,7 +52,7 @@ class AgentState(TypedDict):
 
     # -------------------------------------------------------- Pipeline stages
     intent: str
-    """Classified intent: DATA_QUERY | SCHEMA_EXPLORE | QUERY_EXPLAIN | QUERY_REFINE"""
+    """Classified intent: DATA_QUERY | SCHEMA_EXPLORE | QUERY_EXPLAIN | QUERY_REFINE | RESULT_FOLLOWUP"""
 
     entities: Dict[str, Any]
     """

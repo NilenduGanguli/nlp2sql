@@ -177,7 +177,7 @@ def build_pipeline(graph, config, llm=None):
     entity_node  = entity_fn    if entity_fn    else _graph_default_entities
     schema_node = context_builder.make_context_builder(graph)
     gen_node    = gen_fn       if gen_fn       else _graph_fallback_sql
-    valid_node  = sql_validator.make_sql_validator()
+    valid_node  = sql_validator.make_sql_validator(graph=graph)
     opt_node    = query_optimizer.make_query_optimizer()
     exec_node   = query_executor.make_query_executor(config)
     format_node = result_formatter.make_result_formatter()
@@ -259,9 +259,12 @@ def build_pipeline(graph, config, llm=None):
     workflow.add_edge("retrieve_schema",  "check_clarification")
 
     # After clarification check: stop if clarification needed, else continue to SQL
+    # Skip clarification when intent is RESULT_FOLLOWUP (user is continuing an existing thread)
     workflow.add_conditional_edges(
         "check_clarification",
-        lambda s: "clarify" if s.get("need_clarification") else "generate_sql",
+        lambda s: "clarify" if (
+            s.get("need_clarification") and s.get("intent") != "RESULT_FOLLOWUP"
+        ) else "generate_sql",
         {"clarify": END, "generate_sql": "generate_sql"},
     )
 

@@ -42,7 +42,7 @@ const PROMPT_ORDER = [
 const NODE_DESCRIPTIONS: Record<string, string> = {
   query_enricher_system:       'Enriches the raw user query with domain knowledge before entity extraction.',
   query_enricher_human:        'Human message template (receives {user_input} and {knowledge}).',
-  intent_classifier_system:    'Classifies intent as DATA_QUERY / SCHEMA_EXPLORE / QUERY_EXPLAIN / QUERY_REFINE.',
+  intent_classifier_system:    'Classifies intent as DATA_QUERY / SCHEMA_EXPLORE / QUERY_EXPLAIN / QUERY_REFINE / RESULT_FOLLOWUP. Uses conversation history to detect follow-up references.',
   entity_extractor_system:     'Agentic loop — receives {schemas}, {schema_tree}, {tools_spec}, {max_calls}.',
   clarification_agent_system:  'Decides if query needs clarification and generates a question + options.',
   clarification_agent_human:   'Human message template for the clarification agent.',
