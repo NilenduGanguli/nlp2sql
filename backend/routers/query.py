@@ -59,6 +59,7 @@ def _build_initial_state(user_input: str, history: list) -> Dict[str, Any]:
         "need_clarification": False,
         "clarification_question": "",
         "clarification_options": [],
+        "clarification_context": "",
         "entity_table_fqns": [],
         "_trace": [],
     }
@@ -108,6 +109,7 @@ async def stream_query(
                                         {
                                             "question": state.get("clarification_question", ""),
                                             "options": state.get("clarification_options", []),
+                                            "context": state.get("clarification_context", ""),
                                         },
                                     ),
                                 )

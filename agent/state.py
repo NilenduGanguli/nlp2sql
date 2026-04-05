@@ -126,6 +126,13 @@ class AgentState(TypedDict):
     clarification_options: List[str]
     """Suggested answer options (empty list = open-ended)."""
 
+    clarification_context: str
+    """
+    Agent's plain-English summary of what it currently understands the query
+    to be asking.  Shown to the user above the clarification question so they
+    can see the agent's interpretation and correct it if wrong.
+    """
+
     # ------------------------------------------------------------------ Trace
     _trace: List[Any]
     """Trace steps collected by each node. Type is List[TraceStep.to_dict()]."""

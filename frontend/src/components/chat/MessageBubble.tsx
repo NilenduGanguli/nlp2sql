@@ -63,6 +63,8 @@ export const MessageBubble: React.FC<MessageBubbleProps> = ({
         <ClarificationCard
           question={message.question ?? message.content}
           options={message.options ?? []}
+          context={message.context}
+          multiSelect={message.multiSelect}
           answered={message.answered}
           onAnswer={(answer) => onClarificationAnswer?.(message.id, answer)}
         />

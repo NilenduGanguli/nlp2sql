@@ -5,7 +5,7 @@ import { useTraceStore } from '../../store/traceStore'
 import { streamQuery } from '../../api/query'
 import { MessageList } from './MessageList'
 import { StreamingIndicator } from './StreamingIndicator'
-import type { QueryStep, TraceStep } from '../../types'
+import type { ConversationMessage, QueryStep, TraceStep } from '../../types'
 
 const SUGGESTED_QUERIES = [
   'Show me all customers with KYC status pending',
@@ -27,6 +27,9 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ onOpenInEditor }) => {
     addErrorMessage,
     addClarificationMessage,
     markClarificationAnswered,
+    setActiveBaseQuery,
+    addClarificationPair,
+    getCumulativeQuery,
     clearMessages,
   } = useChatStore()
   const { saveSession } = useChatHistoryStore()
@@ -38,23 +41,16 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ onOpenInEditor }) => {
   const abortRef = useRef<AbortController | null>(null)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
 
-  /** Core submit: accepts explicit content so clarification answers can bypass the input field. */
-  const handleSubmitContent = useCallback(
-    async (content: string) => {
-      if (!content.trim() || isStreaming) return
-
-      const historySnapshot = [...history]
-      setInput('')
+  /** Internal: kick off an SSE stream for the given input + history snapshot. */
+  const _stream = useCallback(
+    (userInput: string, historySnap: ConversationMessage[]) => {
       setIsStreaming(true)
       setCompletedSteps([])
-      addUserMessage(content)
-
-      // Start a new trace for this query
-      traceIdRef.current = startQuery(content)
+      traceIdRef.current = startQuery(userInput)
 
       abortRef.current = streamQuery(
-        content,
-        historySnapshot,
+        userInput,
+        historySnap,
         (step) => setCompletedSteps((prev) => (prev.includes(step) ? prev : [...prev, step])),
         (_sql) => {
           // sql preview — not shown separately in chat
@@ -63,7 +59,6 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ onOpenInEditor }) => {
           addResultMessage(result)
           setIsStreaming(false)
           setCompletedSteps([])
-          // Finalize trace with the full step list from server
           const steps = (result as { _trace?: TraceStep[] })._trace ?? []
           finalizeTrace(traceIdRef.current, steps)
           setTimeout(() => textareaRef.current?.focus(), 0)
@@ -74,9 +69,9 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ onOpenInEditor }) => {
           setCompletedSteps([])
           setTimeout(() => textareaRef.current?.focus(), 0)
         },
-        (question, options) => {
+        (question, options, context, multiSelect) => {
           // Agent is asking for clarification — show card, stop streaming indicator
-          addClarificationMessage(question, options)
+          addClarificationMessage(question, options, context, multiSelect)
           setIsStreaming(false)
           setCompletedSteps([])
         },
@@ -84,17 +79,32 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ onOpenInEditor }) => {
       )
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [isStreaming, history],
+    [addResultMessage, addErrorMessage, addClarificationMessage, addLiveStep, finalizeTrace, startQuery],
   )
 
-  const handleSubmit = useCallback(async () => {
-    await handleSubmitContent(input.trim())
+  /** Fresh query submitted by the user via the input box. */
+  const handleSubmitContent = useCallback(
+    (content: string) => {
+      if (!content.trim() || isStreaming) return
+      // Save as the base query for any clarification chain that follows
+      setActiveBaseQuery(content)
+      const historySnap = [...history]
+      setInput('')
+      addUserMessage(content)
+      _stream(content, historySnap)
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [isStreaming, history, _stream],
+  )
+
+  const handleSubmit = useCallback(() => {
+    handleSubmitContent(input.trim())
   }, [input, handleSubmitContent])
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault()
-      void handleSubmit()
+      handleSubmit()
     }
   }
 
@@ -109,13 +119,43 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ onOpenInEditor }) => {
     setCompletedSteps([])
   }
 
-  /** Called when the user picks an answer from a ClarificationCard. */
+  /**
+   * Called when the user picks an answer from a ClarificationCard.
+   *
+   * Instead of sending just the isolated answer, this builds a cumulative
+   * query that packages the original question + all clarification Q&A pairs
+   * gathered so far, including this latest answer.  The backend therefore
+   * always receives a self-contained, complete requirements spec.
+   */
   const handleClarificationAnswer = useCallback(
     (messageId: string, answer: string) => {
+      // Find the clarification question text from the message
+      const msg = messages.find((m) => m.id === messageId)
+      const question = msg?.question ?? ''
+
+      // Accumulate this Q&A pair into the running requirements
+      addClarificationPair(question, answer)
       markClarificationAnswered(messageId)
-      void handleSubmitContent(answer)
+
+      // Show the user's answer as a visible chat bubble
+      addUserMessage(answer)
+
+      // Build the full cumulative query (base + all pairs including latest)
+      const cumulativeQuery = getCumulativeQuery()
+
+      // Build history snapshot including the answer the user just gave.
+      // (addUserMessage updates history in Zustand but hasn't re-rendered yet,
+      //  so we append the answer explicitly to the current snapshot.)
+      const historyWithAnswer: ConversationMessage[] = [
+        ...history,
+        { role: 'user' as const, content: answer },
+      ]
+
+      // Stream using the cumulative query as user_input
+      _stream(cumulativeQuery, historyWithAnswer)
     },
-    [markClarificationAnswered, handleSubmitContent],
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [messages, history, _stream, addClarificationPair, markClarificationAnswered, addUserMessage, getCumulativeQuery],
   )
 
   /** Save current chat to history and start fresh. */
@@ -275,7 +315,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ onOpenInEditor }) => {
             </button>
           ) : (
             <button
-              onClick={() => void handleSubmit()}
+              onClick={handleSubmit}
               disabled={!input.trim()}
               style={{
                 padding: '8px 20px',

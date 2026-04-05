@@ -124,6 +124,8 @@ export interface ChatMessage {
   result?: QueryResult
   question?: string      // clarification question text
   options?: string[]     // clarification answer options
+  context?: string       // agent's understanding summary (shown above the question)
+  multiSelect?: boolean  // true when multiple options can be selected (AND logic)
   answered?: boolean     // true once the user has responded
   timestamp: Date
 }

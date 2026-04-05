@@ -37,7 +37,7 @@ export function streamQuery(
   onSql: (sql: string) => void,
   onResult: (result: QueryResult & { _trace?: TraceStep[] }) => void,
   onError: (msg: string) => void,
-  onClarification?: (question: string, options: string[]) => void,
+  onClarification?: (question: string, options: string[], context?: string, multiSelect?: boolean) => void,
   onTrace?: (step: TraceStep) => void,
 ): AbortController {
   const controller = new AbortController()
@@ -100,6 +100,8 @@ export function streamQuery(
                 onClarification?.(
                   (event.data.question as string) ?? '',
                   (event.data.options as string[]) ?? [],
+                  (event.data.context as string | undefined) ?? undefined,
+                  (event.data.multi_select as boolean | undefined) ?? false,
                 )
                 break
               case 'trace':
@@ -125,6 +127,8 @@ export function streamQuery(
             onClarification?.(
               (event.data.question as string) ?? '',
               (event.data.options as string[]) ?? [],
+              (event.data.context as string | undefined) ?? undefined,
+              (event.data.multi_select as boolean | undefined) ?? false,
             )
           else if (event.type === 'error') onError((event.data.message as string) ?? 'Unknown error')
         }

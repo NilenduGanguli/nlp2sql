@@ -389,6 +389,25 @@ def _build_schema_tree(graph) -> str:
             "Use search_schema, resolve_business_term, or get_table_detail to explore the rest.]"
         )
 
+    # Always append Oracle data dictionary section — these views are available on every Oracle DB
+    lines.append("")
+    lines.append("## ORACLE DATA DICTIONARY VIEWS (always available — query DB metadata)")
+    lines.append("• ALL_TABLES — all tables accessible to current user (OWNER, TABLE_NAME, NUM_ROWS, etc.)")
+    lines.append("• ALL_COLUMNS — all columns for accessible tables (TABLE_NAME, COLUMN_NAME, DATA_TYPE, NULLABLE)")
+    lines.append("• ALL_CONSTRAINTS — constraint definitions (CONSTRAINT_NAME, CONSTRAINT_TYPE, TABLE_NAME, STATUS)")
+    lines.append("• ALL_INDEXES — index info (INDEX_NAME, TABLE_NAME, UNIQUENESS, STATUS)")
+    lines.append("• ALL_IND_COLUMNS — columns included in each index (INDEX_NAME, COLUMN_NAME, COLUMN_POSITION)")
+    lines.append("• ALL_VIEWS — view definitions accessible to user (VIEW_NAME, TEXT)")
+    lines.append("• ALL_PROCEDURES — stored procedures and packages (OBJECT_NAME, PROCEDURE_NAME, OBJECT_TYPE)")
+    lines.append("• ALL_SYNONYMS — synonym definitions (SYNONYM_NAME, TABLE_OWNER, TABLE_NAME)")
+    lines.append("• ALL_SEQUENCES — sequence objects (SEQUENCE_NAME, MIN_VALUE, MAX_VALUE, INCREMENT_BY)")
+    lines.append("• USER_TABLES — tables owned by current user (subset of ALL_TABLES)")
+    lines.append("• USER_SEGMENTS — storage/size info per segment (SEGMENT_NAME, SEGMENT_TYPE, BYTES)")
+    lines.append("• DBA_TABLES — ALL tables in DB (requires DBA role; cols = ALL_TABLES)")
+    lines.append("• DBA_USERS — database user accounts (USERNAME, ACCOUNT_STATUS, CREATED)")
+    lines.append("Use these when the user asks about schema structure, table counts, column lists,")
+    lines.append("constraint definitions, index usage, or any database metadata question.")
+
     return "\n".join(lines)
 
 

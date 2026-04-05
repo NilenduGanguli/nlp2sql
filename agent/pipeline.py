@@ -45,6 +45,7 @@ def _default_clarify(state: Dict[str, Any]) -> Dict[str, Any]:
         "need_clarification": False,
         "clarification_question": "",
         "clarification_options": [],
+        "clarification_context": "",
     }
 
 
@@ -342,6 +343,7 @@ def run_query(
         "need_clarification": False,
         "clarification_question": "",
         "clarification_options": [],
+        "clarification_context": "",
         "entity_table_fqns": [],
         "_trace": [],
     }
