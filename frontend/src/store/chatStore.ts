@@ -22,6 +22,8 @@ interface ChatStore {
   addClarificationMessage(question: string, options: string[], context?: string, multiSelect?: boolean): void
   addSqlPreviewMessage(sql: string, explanation: string, validationPassed: boolean, validationErrors: string[]): void
   addSqlCandidatesMessage(candidates: Array<{ id: string; interpretation: string; sql: string; explanation: string }>): void
+  /** Add an auto-answer message from the KYC business agent + mark latest clarification as answered. */
+  addKycAutoAnswerMessage(question: string, autoAnswer: string, source: string): void
   markClarificationAnswered(id: string): void
   /** Save the original query that started the current topic. */
   setActiveBaseQuery(query: string): void
@@ -139,6 +141,32 @@ export const useChatStore = create<ChatStore>((set, get) => ({
         },
       ],
     })),
+
+  addKycAutoAnswerMessage: (question, autoAnswer, source) =>
+    set((state) => {
+      // Mark the latest unanswered clarification as answered
+      const updatedMessages = state.messages.map((m) =>
+        m.type === 'clarification' && !m.answered ? { ...m, answered: true } : m,
+      )
+      // Add the auto-answer as a visible message + accumulate as a clarification pair
+      return {
+        messages: [
+          ...updatedMessages,
+          {
+            id: makeId(),
+            type: 'kyc_auto_answer' as const,
+            content: autoAnswer,
+            kycAutoAnswer: { question, autoAnswer, source },
+            timestamp: new Date(),
+          },
+        ],
+        history: [
+          ...state.history,
+          { role: 'user' as const, content: autoAnswer },
+        ].slice(-20),
+        clarificationPairs: [...state.clarificationPairs, { question, answer: autoAnswer }],
+      }
+    }),
 
   markClarificationAnswered: (id) =>
     set((state) => ({

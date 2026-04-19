@@ -117,7 +117,7 @@ export interface QueryResult {
   validation_errors: string[]
 }
 
-export type ChatMessageType = 'user' | 'result' | 'error' | 'clarification' | 'sql_preview' | 'sql_candidates'
+export type ChatMessageType = 'user' | 'result' | 'error' | 'clarification' | 'sql_preview' | 'sql_candidates' | 'kyc_auto_answer'
 
 export interface ChatMessage {
   id: string
@@ -131,6 +131,7 @@ export interface ChatMessage {
   answered?: boolean     // true once the user has responded
   sqlPreview?: { sql: string; explanation: string; validationPassed: boolean; validationErrors: string[] }
   sqlCandidates?: Array<{ id: string; interpretation: string; sql: string; explanation: string }>
+  kycAutoAnswer?: { question: string; autoAnswer: string; source: string }
   timestamp: Date
 }
 

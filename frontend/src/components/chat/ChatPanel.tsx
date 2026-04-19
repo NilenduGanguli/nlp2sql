@@ -29,6 +29,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ onOpenInEditor }) => {
     addClarificationMessage,
     addSqlPreviewMessage,
     addSqlCandidatesMessage,
+    addKycAutoAnswerMessage,
     markClarificationAnswered,
     setActiveBaseQuery,
     addClarificationPair,
@@ -101,12 +102,15 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ onOpenInEditor }) => {
           setIsStreaming(false)
           setCompletedSteps([])
         },
-        // onKycAutoAnswer — informational, no action needed from user
-        undefined,
+        // onKycAutoAnswer — agent auto-answered a clarification, resume streaming
+        (data) => {
+          addKycAutoAnswerMessage(data.question, data.auto_answer, data.source)
+          setIsStreaming(true)
+        },
       )
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [addResultMessage, addErrorMessage, addClarificationMessage, addSqlPreviewMessage, addSqlCandidatesMessage, addLiveStep, finalizeTrace, startQuery],
+    [addResultMessage, addErrorMessage, addClarificationMessage, addSqlPreviewMessage, addSqlCandidatesMessage, addKycAutoAnswerMessage, addLiveStep, finalizeTrace, startQuery],
   )
 
   /** Fresh query submitted by the user via the input box. */

@@ -396,6 +396,7 @@ function StepCard({ step, defaultOpen = false }: StepCardProps) {
 
   const isAgentExtractor  = step.node === 'extract_entities'
   const isSchemaRetrieval = step.node === 'retrieve_schema'
+  const isKycAgent        = step.node === 'kyc_business_agent'
 
   const iterations  = isAgentExtractor ? (step.output_summary?.iterations as number | undefined) : undefined
   const confirmedFqns: string[] = isAgentExtractor
@@ -404,6 +405,14 @@ function StepCard({ step, defaultOpen = false }: StepCardProps) {
 
   const usedPreresolved = isSchemaRetrieval &&
     step.graph_ops.some((op) => op.op === 'use_preresolved_fqns')
+
+  // KYC agent specific data
+  const kycAction     = isKycAgent ? (step.output_summary?.action as string | undefined) : undefined
+  const kycSource     = isKycAgent ? (step.output_summary?.source as string | undefined) : undefined
+  const kycConfidence = isKycAgent ? (step.output_summary?.confidence as number | undefined) : undefined
+  const kycAnswer     = isKycAgent ? (step.output_summary?.answer_preview as string | undefined) : undefined
+  const kycReason     = isKycAgent ? (step.output_summary?.reason as string | undefined) : undefined
+  const kycAutoAnswered = kycAction === 'auto_answer'
 
   return (
     <div style={{ border: `1px solid ${hasError ? C.error + '55' : isAgentExtractor ? C.accent + '44' : C.border}`, borderRadius: 8, marginBottom: 8, overflow: 'hidden' }}>
@@ -435,6 +444,10 @@ function StepCard({ step, defaultOpen = false }: StepCardProps) {
           <Badge label={`${step.graph_ops.length} tool calls`} color="#38bdf8" />
         )}
         {usedPreresolved && <Badge label="fast path" color={C.success} />}
+        {isKycAgent && kycAutoAnswered && <Badge label="auto-answered" color={C.success} />}
+        {isKycAgent && kycAction === 'route_to_user' && <Badge label="→ user" color={C.warn} />}
+        {isKycAgent && kycAction === 'skip' && <Badge label="skipped" color={C.muted} />}
+        {isKycAgent && kycSource && <Badge label={kycSource.replace('_', ' ')} color={kycAutoAnswered ? C.success : C.muted} />}
         <div style={{ flex: 1 }} />
         {isAgentExtractor && confirmedFqns.length > 0 ? (
           <span style={{ color: C.success, fontSize: 11, maxWidth: 300, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
@@ -521,6 +534,68 @@ function StepCard({ step, defaultOpen = false }: StepCardProps) {
                       : JSON.stringify(step.llm_call!.parsed_output, null, 2)}
                     maxH={160}
                   />
+                </>
+              )}
+            </>
+          ) : isKycAgent ? (
+            <>
+              {/* ── KYC BUSINESS AGENT ──────────────────────────────────── */}
+
+              {/* Decision summary */}
+              <div style={{
+                background: kycAutoAnswered ? C.success + '10' : kycAction === 'route_to_user' ? C.warn + '10' : C.panel2,
+                border: `1px solid ${kycAutoAnswered ? C.success + '44' : kycAction === 'route_to_user' ? C.warn + '44' : C.border}`,
+                borderRadius: 6, padding: '12px 14px', fontSize: 12, marginBottom: 12,
+              }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
+                  <span style={{ fontWeight: 700, color: kycAutoAnswered ? C.success : kycAction === 'route_to_user' ? C.warn : C.muted }}>
+                    {kycAutoAnswered ? 'Auto-Answered' : kycAction === 'route_to_user' ? 'Routed to User' : kycAction === 'skip' ? 'Skipped (no question)' : kycAction ?? 'Unknown'}
+                  </span>
+                  {kycSource && (
+                    <Badge label={kycSource.replace(/_/g, ' ')} color={kycAutoAnswered ? C.success : C.muted} />
+                  )}
+                  {kycConfidence != null && (
+                    <span style={{ color: C.muted, fontSize: 11 }}>confidence: {kycConfidence}</span>
+                  )}
+                </div>
+
+                {kycReason && (
+                  <div style={{ color: C.muted, fontSize: 11, marginBottom: 4 }}>
+                    Reason: {kycReason}
+                  </div>
+                )}
+
+                {kycAnswer && (
+                  <div style={{ marginTop: 8 }}>
+                    <div style={{ color: C.muted, fontSize: 10, textTransform: 'uppercase', letterSpacing: 1, marginBottom: 4 }}>Answer</div>
+                    <div style={{
+                      background: C.code, borderRadius: 4, padding: '8px 12px',
+                      color: kycAutoAnswered ? C.success : C.text, fontSize: 12, lineHeight: 1.5,
+                      borderLeft: `3px solid ${kycAutoAnswered ? C.success : C.muted}`,
+                    }}>
+                      {kycAnswer}
+                    </div>
+                  </div>
+                )}
+
+                {!hasLlm && kycAutoAnswered && (
+                  <div style={{ marginTop: 8, color: C.muted, fontSize: 11 }}>
+                    No LLM call needed — matched from learned patterns.
+                  </div>
+                )}
+              </div>
+
+              {/* LLM details if LLM was called (knowledge_base path) */}
+              {hasLlm && step.llm_call!.system_prompt && (
+                <PromptView label="KYC Business Agent — System Prompt" content={step.llm_call!.system_prompt} />
+              )}
+              {hasLlm && step.llm_call!.user_prompt && (
+                <PromptView label="KYC Business Agent — Query + Knowledge" content={step.llm_call!.user_prompt} />
+              )}
+              {hasLlm && step.llm_call!.raw_response && (
+                <>
+                  <SectionLabel>LLM Response</SectionLabel>
+                  <Pre text={step.llm_call!.raw_response} maxH={200} />
                 </>
               )}
             </>

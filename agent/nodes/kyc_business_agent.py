@@ -106,8 +106,6 @@ def make_kyc_business_agent(
                     "kyc_auto_answered": True,
                     "kyc_auto_answer": answer,
                     "need_clarification": False,
-                    "clarification_question": "",
-                    "clarification_options": [],
                     "_trace": _trace,
                 }
 
@@ -135,8 +133,6 @@ def make_kyc_business_agent(
                             "kyc_auto_answered": True,
                             "kyc_auto_answer": answer,
                             "need_clarification": False,
-                            "clarification_question": "",
-                            "clarification_options": [],
                             "_trace": _trace,
                         }
 
@@ -181,7 +177,7 @@ def _find_relevant_entries(
         if not entry_tokens:
             continue
         score = _jaccard(query_tokens, entry_tokens)
-        if score > 0.05:  # minimal relevance threshold
+        if score >= 0.03:  # low threshold — LLM decides if truly relevant
             scored.append((score, entry))
 
     scored.sort(key=lambda x: x[0], reverse=True)

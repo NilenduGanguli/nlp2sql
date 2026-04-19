@@ -4,6 +4,7 @@ import { SqlResultCard } from './SqlResultCard'
 import { SqlPreviewCard } from './SqlPreviewCard'
 import { ClarificationCard } from './ClarificationCard'
 import { SqlCandidatesPicker } from './SqlCandidatesPicker'
+import { KycAutoAnswerBadge } from './KycAutoAnswerBadge'
 
 interface MessageBubbleProps {
   message: ChatMessage
@@ -110,6 +111,18 @@ export const MessageBubble: React.FC<MessageBubbleProps> = ({
         <SqlCandidatesPicker
           candidates={message.sqlCandidates}
           onSelect={(candidate) => onSelectCandidate?.(message.id, candidate)}
+        />
+      </div>
+    )
+  }
+
+  if (message.type === 'kyc_auto_answer' && message.kycAutoAnswer) {
+    return (
+      <div style={{ marginBottom: 12 }}>
+        <KycAutoAnswerBadge
+          question={message.kycAutoAnswer.question}
+          autoAnswer={message.kycAutoAnswer.autoAnswer}
+          source={message.kycAutoAnswer.source}
         />
       </div>
     )
