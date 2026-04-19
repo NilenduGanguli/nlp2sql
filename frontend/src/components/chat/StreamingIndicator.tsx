@@ -4,11 +4,13 @@ import type { QueryStep } from '../../types'
 const STEP_ORDER: QueryStep[] = [
   'enriching',
   'classifying',
+  'auto_clarifying',
   'extracting',
   'retrieving',
   'generating',
   'validating',
   'optimizing',
+  'presenting',
   'executing',
   'formatting',
 ]
@@ -16,11 +18,13 @@ const STEP_ORDER: QueryStep[] = [
 const STEP_LABELS: Record<QueryStep, string> = {
   enriching: 'Enriching query',
   classifying: 'Classifying intent',
+  auto_clarifying: 'Auto-clarifying',
   extracting: 'Extracting entities',
   retrieving: 'Retrieving schema',
   generating: 'Generating SQL',
   validating: 'Validating SQL',
   optimizing: 'Optimizing',
+  presenting: 'Presenting SQL',
   executing: 'Executing',
   formatting: 'Formatting results',
 }

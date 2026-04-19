@@ -8,6 +8,7 @@ import { RelationshipsPage } from './pages/RelationshipsPage'
 import { HistoryPage } from './pages/HistoryPage'
 import { InvestigatePage } from './pages/InvestigatePage'
 import { PromptStudioPage } from './pages/PromptStudioPage'
+import { KYCAgentPage } from './pages/KYCAgentPage'
 import { SchemaTab } from './components/schema/SchemaTab'
 import { useChatStore } from './store/chatStore'
 import type { ChatSession } from './types'
@@ -114,6 +115,16 @@ export default function App() {
         }}
       >
         <PromptStudioPage />
+      </div>
+
+      <div
+        style={{
+          display: activeTab === 'kyc_agent' ? 'flex' : 'none',
+          flexDirection: 'column',
+          height: '100%',
+        }}
+      >
+        <KYCAgentPage />
       </div>
     </AppShell>
   )

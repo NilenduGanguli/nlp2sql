@@ -1,18 +1,30 @@
 import React from 'react'
 import type { ChatMessage } from '../../types'
 import { SqlResultCard } from './SqlResultCard'
+import { SqlPreviewCard } from './SqlPreviewCard'
 import { ClarificationCard } from './ClarificationCard'
+import { SqlCandidatesPicker } from './SqlCandidatesPicker'
 
 interface MessageBubbleProps {
   message: ChatMessage
   onOpenInEditor?: (sql: string) => void
   onClarificationAnswer?: (messageId: string, answer: string) => void
+  onExecuteSql?: (messageId: string, sql: string) => void
+  onSelectCandidate?: (messageId: string, candidate: { id: string; interpretation: string; sql: string; explanation: string }) => void
+  onAcceptQuery?: (messageId: string, sql: string, accepted: boolean) => void
+  isExecutingSql?: boolean
+  executedSqlMessageId?: string
 }
 
 export const MessageBubble: React.FC<MessageBubbleProps> = ({
   message,
   onOpenInEditor,
   onClarificationAnswer,
+  onExecuteSql,
+  onSelectCandidate,
+  onAcceptQuery,
+  isExecutingSql = false,
+  executedSqlMessageId,
 }) => {
   if (message.type === 'user') {
     return (
@@ -67,6 +79,37 @@ export const MessageBubble: React.FC<MessageBubbleProps> = ({
           multiSelect={message.multiSelect}
           answered={message.answered}
           onAnswer={(answer) => onClarificationAnswer?.(message.id, answer)}
+        />
+      </div>
+    )
+  }
+
+  if (message.type === 'sql_preview' && message.sqlPreview) {
+    const isThisExecuting = isExecutingSql && executedSqlMessageId === message.id
+    const wasExecuted = !isExecutingSql && executedSqlMessageId === message.id
+    return (
+      <div style={{ marginBottom: 12 }}>
+        <SqlPreviewCard
+          sql={message.sqlPreview.sql}
+          explanation={message.sqlPreview.explanation}
+          validationPassed={message.sqlPreview.validationPassed}
+          validationErrors={message.sqlPreview.validationErrors}
+          onRunQuery={(sql) => onExecuteSql?.(message.id, sql)}
+          onOpenInEditor={onOpenInEditor}
+          onAcceptQuery={(sql, accepted) => onAcceptQuery?.(message.id, sql, accepted)}
+          isExecuting={isThisExecuting}
+          executed={wasExecuted}
+        />
+      </div>
+    )
+  }
+
+  if (message.type === 'sql_candidates' && message.sqlCandidates) {
+    return (
+      <div style={{ marginBottom: 12 }}>
+        <SqlCandidatesPicker
+          candidates={message.sqlCandidates}
+          onSelect={(candidate) => onSelectCandidate?.(message.id, candidate)}
         />
       </div>
     )

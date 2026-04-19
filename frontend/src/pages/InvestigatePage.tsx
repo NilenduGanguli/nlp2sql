@@ -29,6 +29,8 @@ const NODE_LABELS: Record<string, string> = {
   optimize_sql:        'SQL Optimizer',
   execute_query:       'Query Executor',
   format_result:       'Result Formatter',
+  present_sql:         'Present SQL',
+  kyc_business_agent:  'KYC Business Agent',
 }
 
 // ── Node → prompt label mapping (display only) ───────────────────────────────
@@ -38,6 +40,8 @@ const NODE_PROMPT_LABELS: Record<string, {system?: string, human?: string}> = {
   extract_entities:    { system: 'Entity Extractor — System Prompt (with full schema tree)' },
   check_clarification: { system: 'Clarification Agent — System Prompt' },
   generate_sql:        { system: 'SQL Generator — System Prompt' },
+  present_sql:         { system: 'SQL Presenter — System Prompt' },
+  kyc_business_agent:  { system: 'KYC Business Agent — System Prompt' },
 }
 
 // ── Op type colours ──────────────────────────────────────────────────────────

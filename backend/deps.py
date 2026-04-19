@@ -22,3 +22,8 @@ def get_pipeline(request: Request):
 def get_llm(request: Request):
     """Return the LLM client (may be None if no credentials)."""
     return request.app.state.llm
+
+
+def get_knowledge_store(request: Request):
+    """Return the KYCKnowledgeStore singleton."""
+    return getattr(request.app.state, "knowledge_store", None)

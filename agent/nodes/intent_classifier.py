@@ -45,6 +45,17 @@ RESULT_FOLLOWUP vs QUERY_REFINE distinction:
 - RESULT_FOLLOWUP: user references the AI's prior output ("those results", "that query", "the previous SQL", "those numbers")
 - QUERY_REFINE: user describes a new modification without reference to prior output ("add a filter", "also include")
 
+Additional RESULT_FOLLOWUP indicators (implicit references without explicit pronouns):
+- "now also", "and also", "what about", "how about" (continuation)
+- "but only for", "except", "instead of" (scope modification)
+- "break down by", "group by", "split by" (drill-down on previous results)
+- Short messages that only make sense with prior context ("only active ones", "just the high risk")
+- "same but", "same for", "similar to" (variation on previous query)
+
+IMPORTANT: If the message is very short (under 10 words) and the conversation has prior SQL results,
+lean toward RESULT_FOLLOWUP or QUERY_REFINE rather than DATA_QUERY, because short messages
+usually reference prior context.
+
 When conversation history is provided, check if the user's message refers to a prior AI response
 (look for pronouns like "those", "that", "it", "the query", "the results", "the previous").
 
@@ -52,6 +63,55 @@ Respond with ONLY valid JSON in this exact format:
 {"intent": "DATA_QUERY", "confidence": 0.95, "reasoning": "brief explanation"}
 
 No other text before or after the JSON."""
+
+
+def _extract_previous_result_metadata(conversation_history: list[dict]) -> str:
+    """
+    Scan conversation history in reverse for the most recent assistant message
+    containing SQL.  Return a concise summary of tables and columns so the
+    intent classifier can detect implicit follow-up references.
+    """
+    for turn in reversed(conversation_history):
+        if turn.get("role") != "assistant":
+            continue
+        content = turn.get("content", "")
+        # Try JSON-structured response first
+        try:
+            import json as _json
+            parsed = _json.loads(content)
+            if isinstance(parsed, dict) and parsed.get("sql"):
+                parts = ["Previous result context:"]
+                # Extract tables from SQL
+                tables = re.findall(
+                    r"(?:FROM|JOIN)\s+(\w+\.\w+|\w+)",
+                    parsed["sql"],
+                    re.IGNORECASE,
+                )
+                if tables:
+                    unique_tables = list(dict.fromkeys(t.upper() for t in tables))
+                    parts.append(f"  Tables used: {', '.join(unique_tables[:10])}")
+                # Extract column list if present
+                columns = parsed.get("columns")
+                if columns and isinstance(columns, list):
+                    parts.append(f"  Columns returned: {', '.join(str(c) for c in columns[:15])}")
+                total_rows = parsed.get("total_rows")
+                if total_rows is not None:
+                    parts.append(f"  Row count: {total_rows}")
+                return "\n".join(parts)
+        except Exception:
+            pass
+        # Regex fallback: look for a SELECT statement in the message
+        sql_match = re.search(r"(SELECT\s+.+?FROM\s+\S+)", content, re.IGNORECASE | re.DOTALL)
+        if sql_match:
+            tables = re.findall(
+                r"(?:FROM|JOIN)\s+(\w+\.\w+|\w+)",
+                sql_match.group(1),
+                re.IGNORECASE,
+            )
+            if tables:
+                unique_tables = list(dict.fromkeys(t.upper() for t in tables))
+                return f"Previous result context:\n  Tables used in prior query: {', '.join(unique_tables[:10])}"
+    return ""
 
 
 def make_intent_classifier(llm) -> Callable[[AgentState], AgentState]:
@@ -84,7 +144,7 @@ def make_intent_classifier(llm) -> Callable[[AgentState], AgentState]:
             # Build user message — include recent conversation for RESULT_FOLLOWUP detection
             user_msg_parts = []
             if conversation_history:
-                recent = conversation_history[-4:]  # last 2 turns (user+assistant pairs)
+                recent = conversation_history[-8:]  # last 4 user+assistant pairs
                 history_lines = []
                 for turn in recent:
                     role = turn.get("role", "user").upper()
@@ -93,6 +153,12 @@ def make_intent_classifier(llm) -> Callable[[AgentState], AgentState]:
                     if role == "ASSISTANT" and len(content) > 200:
                         content = content[:200] + "..."
                     history_lines.append(f"{role}: {content}")
+
+                # Extract metadata from most recent assistant SQL result
+                prev_result_context = _extract_previous_result_metadata(conversation_history)
+                if prev_result_context:
+                    history_lines.append(f"\n{prev_result_context}")
+
                 user_msg_parts.append("Recent conversation:\n" + "\n".join(history_lines))
             user_msg_parts.append(f"New query: {user_input}")
             user_message = "\n\n".join(user_msg_parts)

@@ -27,6 +27,8 @@ const PROMPT_LABELS: Record<string, string> = {
   clarification_agent_system:  'Clarification Agent — System',
   clarification_agent_human:   'Clarification Agent — Human',
   sql_generator_system:        'SQL Generator — System',
+  sql_presenter_system:        'SQL Presenter — System',
+  kyc_business_agent_system:   'KYC Business Agent — System',
 }
 
 const PROMPT_ORDER = [
@@ -37,6 +39,8 @@ const PROMPT_ORDER = [
   'clarification_agent_system',
   'clarification_agent_human',
   'sql_generator_system',
+  'sql_presenter_system',
+  'kyc_business_agent_system',
 ]
 
 const NODE_DESCRIPTIONS: Record<string, string> = {
@@ -47,6 +51,8 @@ const NODE_DESCRIPTIONS: Record<string, string> = {
   clarification_agent_system:  'Decides if query needs clarification and generates a question + options.',
   clarification_agent_human:   'Human message template for the clarification agent.',
   sql_generator_system:        'Main SQL generation prompt — rules + constraints + FQN requirements.',
+  sql_presenter_system:        'Presents generated SQL to user for confirmation before execution.',
+  kyc_business_agent_system:   'KYC domain business agent — auto-resolves clarifications using domain knowledge.',
 }
 
 // ── Types ─────────────────────────────────────────────────────────────────────

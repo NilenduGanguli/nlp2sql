@@ -100,6 +100,8 @@ export type QueryStep =
   | 'optimizing'
   | 'executing'
   | 'formatting'
+  | 'auto_clarifying'
+  | 'presenting'
 
 export interface QueryResult {
   type: string
@@ -115,7 +117,7 @@ export interface QueryResult {
   validation_errors: string[]
 }
 
-export type ChatMessageType = 'user' | 'result' | 'error' | 'clarification'
+export type ChatMessageType = 'user' | 'result' | 'error' | 'clarification' | 'sql_preview' | 'sql_candidates'
 
 export interface ChatMessage {
   id: string
@@ -127,6 +129,8 @@ export interface ChatMessage {
   context?: string       // agent's understanding summary (shown above the question)
   multiSelect?: boolean  // true when multiple options can be selected (AND logic)
   answered?: boolean     // true once the user has responded
+  sqlPreview?: { sql: string; explanation: string; validationPassed: boolean; validationErrors: string[] }
+  sqlCandidates?: Array<{ id: string; interpretation: string; sql: string; explanation: string }>
   timestamp: Date
 }
 

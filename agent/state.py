@@ -134,6 +134,30 @@ class AgentState(TypedDict):
     can see the agent's interpretation and correct it if wrong.
     """
 
+    # -------------------------------------------------- KYC Business Agent
+    kyc_auto_answered: bool
+    """True when the KYC business agent auto-answered a clarification."""
+
+    kyc_auto_answer: str
+    """The auto-answer provided by the KYC business agent."""
+
+    # -------------------------------------------------- Multi-SQL Candidates
+    sql_candidates: List[Dict[str, Any]]
+    """Multiple SQL candidates when ambiguity is detected.
+    Each: {id: str, interpretation: str, sql: str, explanation: str}"""
+
+    has_candidates: bool
+    """True when generate_sql produced multiple candidates instead of one."""
+
+    # -------------------------------------------------- Optional Execution
+    skip_execution: bool
+    """When True, pipeline presents SQL for user review instead of auto-executing."""
+
+    # -------------------------------------------------- Conversation Context
+    previous_sql_context: Dict[str, Any]
+    """Context from the user's most recent successful query:
+    {sql: str, columns: List[str], total_rows: int, explanation: str, tables: List[str]}"""
+
     # ------------------------------------------------------------------ Trace
     _trace: List[Any]
     """Trace steps collected by each node. Type is List[TraceStep.to_dict()]."""

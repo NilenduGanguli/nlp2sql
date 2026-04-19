@@ -55,7 +55,17 @@ JOIN SCHEMA.OTHER_TABLE alias2 ON alias.FK_COL = alias2.PK_COL
 
 ```explanation
 One or two sentences explaining what the query does in business terms.
-```"""
+```
+
+AMBIGUITY DETECTION:
+If you see multiple EQUALLY VALID SQL interpretations (different tables, different joins, or different filter meanings), report them AFTER the SQL block:
+
+```ambiguity
+- Interpretation 1: brief description
+- Interpretation 2: brief description
+```
+
+Only report ambiguity when there are genuinely different valid queries (not minor variations). If there's one clear best query, just output the SQL normally without an ambiguity block."""
 
 
 def make_sql_generator(llm) -> Callable[[AgentState], AgentState]:
@@ -91,12 +101,13 @@ def make_sql_generator(llm) -> Callable[[AgentState], AgentState]:
         )
 
         is_followup = intent == "RESULT_FOLLOWUP"
+        is_refine = intent == "QUERY_REFINE"
 
         # Build conversation context
-        # RESULT_FOLLOWUP gets more turns so the LLM sees the prior SQL clearly
-        history_turns = 6 if is_followup else 2
+        # RESULT_FOLLOWUP and QUERY_REFINE get more turns so the LLM sees prior SQL clearly
+        history_turns = 10 if (is_followup or is_refine) else 4
         history_text = ""
-        prev_sql = ""
+        all_prev_sqls: list[dict[str, object]] = []
         if conversation_history:
             recent = conversation_history[-history_turns:]
             history_lines = []
@@ -104,19 +115,38 @@ def make_sql_generator(llm) -> Callable[[AgentState], AgentState]:
                 role = turn.get("role", "user")
                 content = turn.get("content", "")[:400]
                 history_lines.append(f"{role.upper()}: {content}")
-                # Try to extract previous SQL from assistant messages
-                if role == "assistant" and not prev_sql:
-                    try:
-                        import json as _json
-                        parsed = _json.loads(turn.get("content", ""))
-                        if isinstance(parsed, dict) and parsed.get("sql"):
-                            prev_sql = parsed["sql"]
-                    except Exception:
-                        # Try regex fallback
-                        m = re.search(r'"sql"\s*:\s*"(SELECT[^"]+)"', turn.get("content", ""), re.IGNORECASE)
-                        if m:
-                            prev_sql = m.group(1)
             history_text = "\n".join(history_lines)
+
+            # Extract ALL previous SQLs from history (most-recent first)
+            for turn in reversed(conversation_history):
+                if turn.get("role") != "assistant":
+                    continue
+                sql_entry: dict[str, object] = {}
+                raw_content = turn.get("content", "")
+                # Try JSON-structured response
+                try:
+                    import json as _json
+                    parsed = _json.loads(raw_content)
+                    if isinstance(parsed, dict) and parsed.get("sql"):
+                        sql_entry = {
+                            "sql": parsed["sql"],
+                            "explanation": parsed.get("explanation", ""),
+                            "columns": parsed.get("columns", []),
+                            "total_rows": parsed.get("total_rows"),
+                        }
+                except Exception:
+                    pass
+                # Regex fallback
+                if not sql_entry:
+                    m = re.search(
+                        r'"sql"\s*:\s*"(SELECT[^"]+)"',
+                        raw_content,
+                        re.IGNORECASE,
+                    )
+                    if m:
+                        sql_entry = {"sql": m.group(1), "explanation": "", "columns": [], "total_rows": None}
+                if sql_entry:
+                    all_prev_sqls.append(sql_entry)
 
         # Build user message
         user_msg_parts = [
@@ -125,10 +155,51 @@ def make_sql_generator(llm) -> Callable[[AgentState], AgentState]:
         ]
         if history_text:
             user_msg_parts.append(f"\nConversation context:\n{history_text}")
-        if is_followup and prev_sql:
-            user_msg_parts.append(
-                f"\nPrevious SQL (the query the user is referring to):\n```sql\n{prev_sql}\n```"
+
+        # --- Previous SQL context for follow-ups and refinements ---
+        # Prefer structured state context (richer than history-extracted)
+        prev_ctx: dict = state.get("previous_sql_context", {}) or {}
+        if prev_ctx.get("sql") and (is_followup or is_refine):
+            context_parts = [
+                "\n--- PREVIOUS QUERY CONTEXT ---",
+                "The user is referencing this prior query:",
+                f"```sql\n{prev_ctx['sql']}\n```",
+            ]
+            if prev_ctx.get("explanation"):
+                context_parts.append(f"Explanation: {prev_ctx['explanation']}")
+            if prev_ctx.get("columns"):
+                cols = prev_ctx["columns"]
+                if isinstance(cols, list):
+                    context_parts.append(f"Returned columns: {', '.join(str(c) for c in cols[:20])}")
+            if prev_ctx.get("total_rows") is not None:
+                context_parts.append(f"Row count: {prev_ctx['total_rows']}")
+            context_parts.append(
+                "\nThe user's new request should MODIFY or BUILD UPON this query. "
+                "Use the same tables, aliases, and joins as a starting point."
             )
+            user_msg_parts.append("\n".join(context_parts))
+        elif (is_followup or is_refine) and all_prev_sqls:
+            # Fall back to history-extracted SQL chain
+            most_recent = all_prev_sqls[0]
+            context_parts = [
+                "\n--- PREVIOUS QUERY CONTEXT ---",
+                "The user is referencing this prior query:",
+                f"```sql\n{most_recent['sql']}\n```",
+            ]
+            if most_recent.get("explanation"):
+                context_parts.append(f"Explanation: {most_recent['explanation']}")
+            if most_recent.get("columns"):
+                cols = most_recent["columns"]
+                if isinstance(cols, list) and cols:
+                    context_parts.append(f"Returned columns: {', '.join(str(c) for c in cols[:20])}")
+            if most_recent.get("total_rows") is not None:
+                context_parts.append(f"Row count: {most_recent['total_rows']}")
+            context_parts.append(
+                "\nThe user's new request should MODIFY or BUILD UPON this query. "
+                "Use the same tables, aliases, and joins as a starting point."
+            )
+            user_msg_parts.append("\n".join(context_parts))
+
         if retry_count > 0 and validation_errors:
             error_list = "\n".join(f"  - {e}" for e in validation_errors)
             user_msg_parts.append(
@@ -188,6 +259,35 @@ def make_sql_generator(llm) -> Callable[[AgentState], AgentState]:
             )
 
             trace.set_llm_call(system_prompt, user_message, content, {"sql": generated_sql, "explanation": sql_explanation})
+
+            # --- Ambiguity detection: check for ```ambiguity block ---
+            ambiguity_match = re.search(r"```ambiguity\s*([\s\S]*?)```", content, re.IGNORECASE)
+            if ambiguity_match:
+                interpretations = _parse_ambiguity_block(ambiguity_match.group(1))
+                if len(interpretations) >= 2:
+                    logger.info("Ambiguity detected: %d interpretations", len(interpretations))
+                    candidates = _generate_multi_candidates(
+                        llm, system_prompt, schema_context, user_input,
+                        interpretations, generated_sql, sql_explanation, trace,
+                    )
+                    if candidates:
+                        trace.output_summary = {
+                            "sql_length": len(generated_sql),
+                            "sql_preview": generated_sql[:300],
+                            "retry_count": retry_count,
+                            "candidates": len(candidates),
+                        }
+                        _trace.append(trace.finish().to_dict())
+                        return {
+                            **state,
+                            "generated_sql": candidates[0]["sql"],
+                            "sql_explanation": candidates[0]["explanation"],
+                            "sql_candidates": candidates,
+                            "has_candidates": True,
+                            "retry_count": retry_count + (1 if retry_count > 0 else 0),
+                            "step": "sql_generated",
+                            "_trace": _trace,
+                        }
 
         except Exception as exc:
             logger.error("SQL generation failed: %s", exc)
@@ -258,3 +358,67 @@ def _build_fallback_sql(state: AgentState) -> str:
         return f"SELECT * FROM {hint_name} FETCH FIRST 100 ROWS ONLY"
 
     return "SELECT 'No table resolved' AS error FROM DUAL"
+
+
+def _parse_ambiguity_block(text: str) -> list[str]:
+    """Parse interpretations from the ambiguity block."""
+    interpretations = []
+    for line in text.strip().splitlines():
+        line = line.strip().lstrip("-").strip()
+        # Remove "Interpretation N:" prefix
+        line = re.sub(r"^Interpretation\s+\d+\s*:\s*", "", line, flags=re.IGNORECASE).strip()
+        if line:
+            interpretations.append(line)
+    return interpretations[:4]  # cap at 4
+
+
+def _generate_multi_candidates(
+    llm,
+    system_prompt: str,
+    schema_context: str,
+    user_input: str,
+    interpretations: list[str],
+    first_sql: str,
+    first_explanation: str,
+    trace: TraceStep,
+) -> list[dict]:
+    """Generate a SQL candidate for each interpretation."""
+    from langchain_core.messages import HumanMessage, SystemMessage
+    import uuid
+
+    candidates = [{
+        "id": str(uuid.uuid4())[:8],
+        "interpretation": interpretations[0] if interpretations else "Primary interpretation",
+        "sql": first_sql,
+        "explanation": first_explanation,
+    }]
+
+    for interp in interpretations[1:]:
+        try:
+            msg = (
+                f"Schema (DDL context):\n{schema_context}\n\n"
+                f"Question: {user_input}\n\n"
+                f"Generate SQL for THIS SPECIFIC interpretation:\n{interp}\n\n"
+                f"Output the SQL in ```sql ... ``` and explanation in ```explanation ... ``` blocks. "
+                f"Do NOT include an ambiguity block."
+            )
+            response = llm.invoke([
+                SystemMessage(content=system_prompt),
+                HumanMessage(content=msg),
+            ])
+            content = response.content if hasattr(response, "content") else str(response)
+
+            sql_match = re.search(r"```sql\s*([\s\S]*?)```", content, re.IGNORECASE)
+            exp_match = re.search(r"```explanation\s*([\s\S]*?)```", content, re.IGNORECASE)
+
+            if sql_match:
+                candidates.append({
+                    "id": str(uuid.uuid4())[:8],
+                    "interpretation": interp,
+                    "sql": sql_match.group(1).strip(),
+                    "explanation": exp_match.group(1).strip() if exp_match else interp,
+                })
+        except Exception as exc:
+            logger.warning("Failed to generate candidate for '%s': %s", interp[:50], exc)
+
+    return candidates if len(candidates) >= 2 else []

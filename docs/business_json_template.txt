@@ -1,0 +1,92 @@
+{"global_value_sets":
+	"STATUS_VALUES":{
+		"description":"Standard status values used across KYC Components ( Core, Appendix, PUP)",
+		"values":[
+			"LEGACY INACTIVE",
+			"REJECTED EXPIRED",
+			"EXPIRED",
+			"APPROVED",
+			"Approved",
+			"...", # more are avaialable but compacted for demo
+		]
+	},
+	"CLIENT_TYPE_VALUES":{
+		"description" : Standard values for CLIENT_TYPE used across KYC Components",
+		"values" : [
+			"SMCORP",
+			"NONPROFIT",
+			"",
+			"MEDCORP",
+			"FUND",
+			"...", # more are avaialable but compacted for demo
+		]
+	},
+	"*_VALUES" : {...}, # more <column>_VALUES are avaialable but compacted for demo
+	"default_columns" : {
+		"KYC_SHARD_NUM" :{
+		"description" : "KYC shard number for workflow version",
+		"values": "Integer"
+		},
+		"ACT_STRT_DT": {
+		"description" : "The active start date for the APF record",
+		"values" : "Oracle Date"
+		},
+		{...}, # more are avaialable but compacted for demo
+	},
+	"tables" : {
+		"KYC_MAIN" : {
+			"full_name" : "KYC_RGN_MAIN.KYC_MAIN",
+			"columns" : [
+				"CLIENT_TYPE",
+				"FORM_VERSION_NUMBER",
+				"PRIMARY_ID_TYPE",
+				"STATUS",
+				"RISK_RATING",
+				"...", # more are avaialable but compacted for demo
+			],
+			"primary_key" : [
+				"KYCID",
+				"CORE_COMPONENT_STATE"
+			],
+			"CLIENT_TYPE" : {
+				"description" : "Client Types of a Client",
+				"values_ser_ref" : "CLIENT_TYPE_VALUES" # this refers to keys of the above section that has the reference values
+			},
+			"FORM_VERSION_NUMBER" : {
+				"description" : "For Version Number at core Level",
+				"values" : [
+					"String but contains numbers"
+				]
+			},
+			"PRIMARY_ID_TYPE" : {
+				"description" : "Primary ID Type of a client",
+				"values" : [
+					"GCFID",
+					"CCID",
+					"LOCAL_ID"
+				]
+			},
+			"STATUS" : {
+				"description" : "Status of Client at Core Level",
+				"value_set_ref" : "STATUS_VALUES"  # this refers to keys of the above section keys matching "STATUS_VALUES" that has the reference values
+			},
+			"..." : {}, # more are avaialable but compacted for demo
+		},
+		"..." : {} , # more tables are available but shortened for demo
+	},
+	"relationships" : [
+		{
+			"parent" : "KYC_MAIN",
+			"child" : "KYC_OFFLINE_RISKRESYNC_CALC",
+			"parent_key" : [
+				"KYCID",
+			],
+			"child_key" : [
+				"KYCID",
+				"RELATED_KYCID",
+			],
+			"join_type" : "INNER JOIN"
+		},
+		{...}, # more relationships are available but shortened for demo
+	]
+}

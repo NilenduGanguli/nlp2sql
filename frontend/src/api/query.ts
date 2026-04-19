@@ -1,5 +1,35 @@
 import type { ConversationMessage, QueryResult, QueryStep, TraceStep } from '../types'
 
+interface ClarificationPair {
+  question: string
+  answer: string
+}
+
+/**
+ * Send accept/reject feedback for a generated query.
+ * When accepted, the backend records conversation context as learned patterns.
+ */
+export async function acceptGeneratedQuery(
+  sql: string,
+  explanation: string,
+  userInput: string,
+  clarificationPairs: ClarificationPair[],
+  accepted: boolean,
+): Promise<{ status: string }> {
+  const res = await fetch('/api/query/accept-query', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      sql,
+      explanation,
+      user_input: userInput,
+      clarification_pairs: clarificationPairs,
+      accepted,
+    }),
+  })
+  return res.json()
+}
+
 interface SSEEvent {
   type: string
   data: Record<string, unknown>
@@ -39,6 +69,9 @@ export function streamQuery(
   onError: (msg: string) => void,
   onClarification?: (question: string, options: string[], context?: string, multiSelect?: boolean) => void,
   onTrace?: (step: TraceStep) => void,
+  onSqlReady?: (data: { sql: string; explanation: string; validation_passed: boolean; validation_errors: string[] }) => void,
+  onSqlCandidates?: (candidates: Array<{ id: string; interpretation: string; sql: string; explanation: string }>) => void,
+  onKycAutoAnswer?: (data: { question: string; auto_answer: string; source: string }) => void,
 ): AbortController {
   const controller = new AbortController()
 
@@ -107,6 +140,15 @@ export function streamQuery(
               case 'trace':
                 onTrace?.(event.data as unknown as TraceStep)
                 break
+              case 'sql_ready':
+                onSqlReady?.(event.data as { sql: string; explanation: string; validation_passed: boolean; validation_errors: string[] })
+                break
+              case 'sql_candidates':
+                onSqlCandidates?.(((event.data as { candidates?: Array<{ id: string; interpretation: string; sql: string; explanation: string }> }).candidates) ?? [])
+                break
+              case 'kyc_auto_answer':
+                onKycAutoAnswer?.(event.data as { question: string; auto_answer: string; source: string })
+                break
               case 'error':
                 onError((event.data.message as string) ?? 'Unknown error')
                 break
@@ -130,6 +172,204 @@ export function streamQuery(
               (event.data.context as string | undefined) ?? undefined,
               (event.data.multi_select as boolean | undefined) ?? false,
             )
+          else if (event.type === 'error') onError((event.data.message as string) ?? 'Unknown error')
+        }
+      }
+    } catch (err) {
+      if ((err as Error).name !== 'AbortError') {
+        onError((err as Error).message ?? 'Streaming error')
+      }
+    }
+  })()
+
+  return controller
+}
+
+/**
+ * Execute a selected SQL candidate via SSE (POST + fetch + ReadableStream).
+ * Called after user picks a candidate from SqlCandidatesPicker.
+ * The backend validates, optimizes, and returns sql_ready or result events.
+ * Returns an AbortController — call .abort() to cancel the request.
+ */
+export function executeCandidateSql(
+  sql: string,
+  explanation: string,
+  userInput: string,
+  history: ConversationMessage[],
+  onStep: (step: QueryStep) => void,
+  onSqlReady: (data: { sql: string; explanation: string; validation_passed: boolean; validation_errors: string[] }) => void,
+  onError: (msg: string) => void,
+  onTrace?: (step: TraceStep) => void,
+): AbortController {
+  const controller = new AbortController()
+
+  ;(async () => {
+    try {
+      const response = await fetch('/api/query/execute-candidate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ sql, explanation, user_input: userInput, conversation_history: history }),
+        signal: controller.signal,
+      })
+
+      if (!response.ok) {
+        let msg = `Request failed (${response.status})`
+        try {
+          const body = await response.json()
+          msg = (body as { detail?: string; message?: string }).detail ?? msg
+        } catch {
+          // ignore
+        }
+        onError(msg)
+        return
+      }
+
+      if (!response.body) {
+        onError('No response body from server')
+        return
+      }
+
+      const reader = response.body.getReader()
+      const decoder = new TextDecoder()
+      let buffer = ''
+
+      while (true) {
+        const { done, value } = await reader.read()
+        if (done) break
+
+        buffer += decoder.decode(value, { stream: true }).replace(/\r\n/g, '\n')
+
+        let boundary = buffer.indexOf('\n\n')
+        while (boundary !== -1) {
+          const block = buffer.slice(0, boundary)
+          buffer = buffer.slice(boundary + 2)
+
+          const event = parseSSEBlock(block)
+          if (event) {
+            switch (event.type) {
+              case 'step':
+                onStep((event.data.step as QueryStep) ?? 'validating')
+                break
+              case 'sql_ready':
+                onSqlReady(event.data as { sql: string; explanation: string; validation_passed: boolean; validation_errors: string[] })
+                break
+              case 'trace':
+                onTrace?.(event.data as unknown as TraceStep)
+                break
+              case 'error':
+                onError((event.data.message as string) ?? 'Unknown error')
+                break
+            }
+          }
+
+          boundary = buffer.indexOf('\n\n')
+        }
+      }
+
+      // Flush remaining
+      const remaining = buffer.replace(/\r\n/g, '\n').trim()
+      if (remaining) {
+        const event = parseSSEBlock(remaining)
+        if (event) {
+          if (event.type === 'sql_ready') onSqlReady(event.data as { sql: string; explanation: string; validation_passed: boolean; validation_errors: string[] })
+          else if (event.type === 'error') onError((event.data.message as string) ?? 'Unknown error')
+        }
+      }
+    } catch (err) {
+      if ((err as Error).name !== 'AbortError') {
+        onError((err as Error).message ?? 'Streaming error')
+      }
+    }
+  })()
+
+  return controller
+}
+
+/**
+ * Execute a confirmed SQL query via SSE (POST + fetch + ReadableStream).
+ * Called after user clicks "Run Query" on an sql_preview card.
+ * Returns an AbortController — call .abort() to cancel the request.
+ */
+export function executeConfirmedSql(
+  sql: string,
+  userInput: string,
+  history: ConversationMessage[],
+  onStep: (step: QueryStep) => void,
+  onResult: (result: QueryResult & { _trace?: TraceStep[] }) => void,
+  onError: (msg: string) => void,
+  onTrace?: (step: TraceStep) => void,
+): AbortController {
+  const controller = new AbortController()
+
+  ;(async () => {
+    try {
+      const response = await fetch('/api/query/execute', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ sql, user_input: userInput, conversation_history: history }),
+        signal: controller.signal,
+      })
+
+      if (!response.ok) {
+        let msg = `Request failed (${response.status})`
+        try {
+          const body = await response.json()
+          msg = (body as { detail?: string; message?: string }).detail ?? msg
+        } catch {
+          // ignore
+        }
+        onError(msg)
+        return
+      }
+
+      if (!response.body) {
+        onError('No response body from server')
+        return
+      }
+
+      const reader = response.body.getReader()
+      const decoder = new TextDecoder()
+      let buffer = ''
+
+      while (true) {
+        const { done, value } = await reader.read()
+        if (done) break
+
+        buffer += decoder.decode(value, { stream: true }).replace(/\r\n/g, '\n')
+
+        let boundary = buffer.indexOf('\n\n')
+        while (boundary !== -1) {
+          const block = buffer.slice(0, boundary)
+          buffer = buffer.slice(boundary + 2)
+
+          const event = parseSSEBlock(block)
+          if (event) {
+            switch (event.type) {
+              case 'step':
+                onStep((event.data.step as QueryStep) ?? 'executing')
+                break
+              case 'result':
+                onResult(event.data as unknown as QueryResult)
+                break
+              case 'trace':
+                onTrace?.(event.data as unknown as TraceStep)
+                break
+              case 'error':
+                onError((event.data.message as string) ?? 'Unknown error')
+                break
+            }
+          }
+
+          boundary = buffer.indexOf('\n\n')
+        }
+      }
+
+      // Flush remaining
+      const remaining = buffer.replace(/\r\n/g, '\n').trim()
+      if (remaining) {
+        const event = parseSSEBlock(remaining)
+        if (event) {
+          if (event.type === 'result') onResult(event.data as unknown as QueryResult)
           else if (event.type === 'error') onError((event.data.message as string) ?? 'Unknown error')
         }
       }

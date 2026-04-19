@@ -182,6 +182,17 @@ def build_pipeline(graph, config, llm=None):
     exec_node   = query_executor.make_query_executor(config)
     format_node = result_formatter.make_result_formatter()
 
+    # SQL presenter: packages SQL for user review (confirm-before-execute)
+    from agent.nodes.sql_presenter import make_sql_presenter
+    present_node = make_sql_presenter()
+
+    # KYC Business Agent: auto-answers clarification questions from knowledge base
+    kyc_agent_node = None
+    _knowledge_store = getattr(config, "_knowledge_store", None)
+    if _knowledge_store:
+        from agent.nodes.kyc_business_agent import make_kyc_business_agent
+        kyc_agent_node = make_kyc_business_agent(llm=llm, knowledge_store=_knowledge_store)
+
     if not _LANGGRAPH_AVAILABLE:
         # ------------------------------------------------------------------ #
         # Fallback: simple sequential pipeline without LangGraph
@@ -227,6 +238,7 @@ def build_pipeline(graph, config, llm=None):
             ("check_clarification", clarify_node),  # pass-through in sequential mode
             ("retry_loop", None),   # special marker handled above
             ("optimize_sql",        opt_node),
+            ("present_sql",         present_node),
             ("execute_query",       exec_node),
             ("format_result",       format_node),
         ]
@@ -246,9 +258,12 @@ def build_pipeline(graph, config, llm=None):
     workflow.add_node("extract_entities",    entity_node)
     workflow.add_node("retrieve_schema",     schema_node)
     workflow.add_node("check_clarification", clarify_node)
+    if kyc_agent_node:
+        workflow.add_node("kyc_business_agent", kyc_agent_node)
     workflow.add_node("generate_sql",        gen_node)
     workflow.add_node("validate_sql",        valid_node)
     workflow.add_node("optimize_sql",        opt_node)
+    workflow.add_node("present_sql",         present_node)
     workflow.add_node("execute_query",       exec_node)
     workflow.add_node("format_result",       format_node)
 
@@ -258,17 +273,39 @@ def build_pipeline(graph, config, llm=None):
     workflow.add_edge("extract_entities", "retrieve_schema")
     workflow.add_edge("retrieve_schema",  "check_clarification")
 
-    # After clarification check: stop if clarification needed, else continue to SQL
-    # Skip clarification when intent is RESULT_FOLLOWUP (user is continuing an existing thread)
-    workflow.add_conditional_edges(
-        "check_clarification",
-        lambda s: "clarify" if (
-            s.get("need_clarification") and s.get("intent") != "RESULT_FOLLOWUP"
-        ) else "generate_sql",
-        {"clarify": END, "generate_sql": "generate_sql"},
-    )
+    # After clarification check:
+    # - needs_clarification=true AND kyc_agent available → try kyc_business_agent
+    # - needs_clarification=true AND no kyc_agent → END (user sees clarification)
+    # - needs_clarification=false OR RESULT_FOLLOWUP → generate_sql
+    if kyc_agent_node:
+        workflow.add_conditional_edges(
+            "check_clarification",
+            lambda s: "kyc_agent" if (
+                s.get("need_clarification") and s.get("intent") != "RESULT_FOLLOWUP"
+            ) else "generate_sql",
+            {"kyc_agent": "kyc_business_agent", "generate_sql": "generate_sql"},
+        )
+        # After KYC agent: auto-answered → generate_sql, else → END (user sees clarification)
+        workflow.add_conditional_edges(
+            "kyc_business_agent",
+            lambda s: "generate_sql" if s.get("kyc_auto_answered") else "end",
+            {"generate_sql": "generate_sql", "end": END},
+        )
+    else:
+        workflow.add_conditional_edges(
+            "check_clarification",
+            lambda s: "clarify" if (
+                s.get("need_clarification") and s.get("intent") != "RESULT_FOLLOWUP"
+            ) else "generate_sql",
+            {"clarify": END, "generate_sql": "generate_sql"},
+        )
 
-    workflow.add_edge("generate_sql", "validate_sql")
+    # After generate_sql: if multiple candidates detected → END (user picks), else → validate
+    workflow.add_conditional_edges(
+        "generate_sql",
+        lambda s: "end" if s.get("has_candidates") else "validate",
+        {"end": END, "validate": "validate_sql"},
+    )
 
     def route_after_validation(state: Dict[str, Any]) -> str:
         if state.get("validation_passed"):
@@ -288,7 +325,13 @@ def build_pipeline(graph, config, llm=None):
         },
     )
 
-    workflow.add_edge("optimize_sql", "execute_query")
+    # After optimization: present SQL for review or auto-execute
+    workflow.add_conditional_edges(
+        "optimize_sql",
+        lambda s: "present" if s.get("skip_execution", True) else "execute",
+        {"present": "present_sql", "execute": "execute_query"},
+    )
+    workflow.add_edge("present_sql", END)
     workflow.add_edge("execute_query", "format_result")
     workflow.add_edge("format_result", END)
 
@@ -348,6 +391,12 @@ def run_query(
         "clarification_options": [],
         "clarification_context": "",
         "entity_table_fqns": [],
+        "kyc_auto_answered": False,
+        "kyc_auto_answer": "",
+        "sql_candidates": [],
+        "has_candidates": False,
+        "skip_execution": True,
+        "previous_sql_context": {},
         "_trace": [],
     }
 

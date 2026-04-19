@@ -2,7 +2,7 @@ import React, { useState, useRef, useCallback } from 'react'
 import { useChatStore } from '../../store/chatStore'
 import { useChatHistoryStore } from '../../store/chatHistoryStore'
 import { useTraceStore } from '../../store/traceStore'
-import { streamQuery } from '../../api/query'
+import { streamQuery, executeConfirmedSql, executeCandidateSql, acceptGeneratedQuery } from '../../api/query'
 import { MessageList } from './MessageList'
 import { StreamingIndicator } from './StreamingIndicator'
 import type { ConversationMessage, QueryStep, TraceStep } from '../../types'
@@ -22,14 +22,18 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ onOpenInEditor }) => {
   const {
     messages,
     history,
+    activeBaseQuery,
     addUserMessage,
     addResultMessage,
     addErrorMessage,
     addClarificationMessage,
+    addSqlPreviewMessage,
+    addSqlCandidatesMessage,
     markClarificationAnswered,
     setActiveBaseQuery,
     addClarificationPair,
     getCumulativeQuery,
+    getFollowUpContext,
     clearMessages,
   } = useChatStore()
   const { saveSession } = useChatHistoryStore()
@@ -37,15 +41,19 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ onOpenInEditor }) => {
   const traceIdRef = useRef<string>('')
   const [input, setInput] = useState('')
   const [isStreaming, setIsStreaming] = useState(false)
+  const [isExecutingSql, setIsExecutingSql] = useState(false)
+  const [executedSqlMessageId, setExecutedSqlMessageId] = useState<string | undefined>(undefined)
   const [completedSteps, setCompletedSteps] = useState<QueryStep[]>([])
   const abortRef = useRef<AbortController | null>(null)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
+  const lastUserInputRef = useRef<string>('')
 
   /** Internal: kick off an SSE stream for the given input + history snapshot. */
   const _stream = useCallback(
     (userInput: string, historySnap: ConversationMessage[]) => {
       setIsStreaming(true)
       setCompletedSteps([])
+      lastUserInputRef.current = userInput
       traceIdRef.current = startQuery(userInput)
 
       abortRef.current = streamQuery(
@@ -76,10 +84,29 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ onOpenInEditor }) => {
           setCompletedSteps([])
         },
         (step) => addLiveStep(step),
+        // onSqlReady — backend paused before execution, show preview card
+        (data) => {
+          addSqlPreviewMessage(
+            data.sql,
+            data.explanation,
+            data.validation_passed,
+            data.validation_errors,
+          )
+          setIsStreaming(false)
+          setCompletedSteps([])
+        },
+        // onSqlCandidates — multiple interpretations
+        (candidates) => {
+          addSqlCandidatesMessage(candidates)
+          setIsStreaming(false)
+          setCompletedSteps([])
+        },
+        // onKycAutoAnswer — informational, no action needed from user
+        undefined,
       )
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [addResultMessage, addErrorMessage, addClarificationMessage, addLiveStep, finalizeTrace, startQuery],
+    [addResultMessage, addErrorMessage, addClarificationMessage, addSqlPreviewMessage, addSqlCandidatesMessage, addLiveStep, finalizeTrace, startQuery],
   )
 
   /** Fresh query submitted by the user via the input box. */
@@ -91,10 +118,12 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ onOpenInEditor }) => {
       const historySnap = [...history]
       setInput('')
       addUserMessage(content)
-      _stream(content, historySnap)
+      // Enrich with follow-up context if this references previous results
+      const enrichedInput = getFollowUpContext(content)
+      _stream(enrichedInput, historySnap)
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [isStreaming, history, _stream],
+    [isStreaming, history, _stream, getFollowUpContext],
   )
 
   const handleSubmit = useCallback(() => {
@@ -116,8 +145,51 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ onOpenInEditor }) => {
   const handleStop = () => {
     abortRef.current?.abort()
     setIsStreaming(false)
+    setIsExecutingSql(false)
     setCompletedSteps([])
   }
+
+  /**
+   * Called when user clicks "Run Query" on an SqlPreviewCard.
+   * Streams execution results from POST /api/query/execute.
+   */
+  const handleExecuteConfirmed = useCallback(
+    (messageId: string, sql: string) => {
+      setIsStreaming(true)
+      setIsExecutingSql(true)
+      setExecutedSqlMessageId(messageId)
+      setCompletedSteps([])
+
+      const queryContext = activeBaseQuery || lastUserInputRef.current
+      const historySnap = [...history]
+
+      abortRef.current = executeConfirmedSql(
+        sql,
+        queryContext,
+        historySnap,
+        (step) => setCompletedSteps((prev) => (prev.includes(step) ? prev : [...prev, step])),
+        (result) => {
+          addResultMessage(result)
+          setIsStreaming(false)
+          setIsExecutingSql(false)
+          setCompletedSteps([])
+          const steps = (result as { _trace?: TraceStep[] })._trace ?? []
+          finalizeTrace(traceIdRef.current, steps)
+          setTimeout(() => textareaRef.current?.focus(), 0)
+        },
+        (errMsg) => {
+          addErrorMessage(errMsg)
+          setIsStreaming(false)
+          setIsExecutingSql(false)
+          setCompletedSteps([])
+          setTimeout(() => textareaRef.current?.focus(), 0)
+        },
+        (step) => addLiveStep(step),
+      )
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [activeBaseQuery, history, addResultMessage, addErrorMessage, addLiveStep, finalizeTrace],
+  )
 
   /**
    * Called when the user picks an answer from a ClarificationCard.
@@ -156,6 +228,68 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ onOpenInEditor }) => {
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [messages, history, _stream, addClarificationPair, markClarificationAnswered, addUserMessage, getCumulativeQuery],
+  )
+
+  /**
+   * Called when the user picks a candidate from the SqlCandidatesPicker.
+   * Sends the selected SQL through validate -> optimize -> sql_ready pipeline.
+   */
+  const handleSelectCandidate = useCallback(
+    (_messageId: string, candidate: { id: string; interpretation: string; sql: string; explanation: string }) => {
+      addUserMessage(`Selected: ${candidate.interpretation}`)
+      setIsStreaming(true)
+      setCompletedSteps([])
+
+      const queryContext = activeBaseQuery || lastUserInputRef.current
+      const historySnap = [...history]
+
+      abortRef.current = executeCandidateSql(
+        candidate.sql,
+        candidate.explanation,
+        queryContext,
+        historySnap,
+        (step) => setCompletedSteps((prev) => (prev.includes(step) ? prev : [...prev, step])),
+        (data) => {
+          addSqlPreviewMessage(
+            data.sql,
+            data.explanation,
+            data.validation_passed,
+            data.validation_errors,
+          )
+          setIsStreaming(false)
+          setCompletedSteps([])
+        },
+        (errMsg) => {
+          addErrorMessage(errMsg)
+          setIsStreaming(false)
+          setCompletedSteps([])
+          setTimeout(() => textareaRef.current?.focus(), 0)
+        },
+        (step) => addLiveStep(step),
+      )
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [activeBaseQuery, history, addUserMessage, addSqlPreviewMessage, addErrorMessage, addLiveStep],
+  )
+
+  /**
+   * Called when user clicks thumbs up/down on an SqlPreviewCard.
+   * Sends feedback to the backend to record (or skip) in the KYC knowledge store.
+   */
+  const handleAcceptQuery = useCallback(
+    (_messageId: string, sql: string, accepted: boolean) => {
+      const queryContext = activeBaseQuery || lastUserInputRef.current
+      const { clarificationPairs } = useChatStore.getState()
+      // Find the explanation from the sql_preview message
+      const msg = messages.find((m) => m.id === _messageId)
+      const explanation = msg?.sqlPreview?.explanation ?? ''
+
+      acceptGeneratedQuery(sql, explanation, queryContext, clarificationPairs, accepted).catch(
+        (err) => console.warn('Failed to send query feedback:', err),
+      )
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [activeBaseQuery, messages],
   )
 
   /** Save current chat to history and start fresh. */
@@ -252,6 +386,11 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ onOpenInEditor }) => {
         messages={messages}
         onOpenInEditor={onOpenInEditor}
         onClarificationAnswer={handleClarificationAnswer}
+        onExecuteSql={handleExecuteConfirmed}
+        onSelectCandidate={handleSelectCandidate}
+        onAcceptQuery={handleAcceptQuery}
+        isExecutingSql={isExecutingSql}
+        executedSqlMessageId={executedSqlMessageId}
       />
 
       {/* Streaming indicator */}

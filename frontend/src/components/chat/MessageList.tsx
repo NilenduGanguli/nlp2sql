@@ -6,12 +6,22 @@ interface MessageListProps {
   messages: ChatMessage[]
   onOpenInEditor?: (sql: string) => void
   onClarificationAnswer?: (messageId: string, answer: string) => void
+  onExecuteSql?: (messageId: string, sql: string) => void
+  onSelectCandidate?: (messageId: string, candidate: { id: string; interpretation: string; sql: string; explanation: string }) => void
+  onAcceptQuery?: (messageId: string, sql: string, accepted: boolean) => void
+  isExecutingSql?: boolean
+  executedSqlMessageId?: string
 }
 
 export const MessageList: React.FC<MessageListProps> = ({
   messages,
   onOpenInEditor,
   onClarificationAnswer,
+  onExecuteSql,
+  onSelectCandidate,
+  onAcceptQuery,
+  isExecutingSql,
+  executedSqlMessageId,
 }) => {
   const containerRef = useRef<HTMLDivElement>(null)
 
@@ -45,6 +55,11 @@ export const MessageList: React.FC<MessageListProps> = ({
           message={msg}
           onOpenInEditor={onOpenInEditor}
           onClarificationAnswer={onClarificationAnswer}
+          onExecuteSql={onExecuteSql}
+          onSelectCandidate={onSelectCandidate}
+          onAcceptQuery={onAcceptQuery}
+          isExecutingSql={isExecutingSql}
+          executedSqlMessageId={executedSqlMessageId}
         />
       ))}
     </div>

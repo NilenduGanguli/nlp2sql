@@ -33,6 +33,7 @@ from knowledge_graph.init_graph import initialize_graph
 
 from backend.routers import admin, health, query, schema, sql, graph as graph_router
 from backend.routers import prompts as prompts_router
+from backend.routers import kyc_agent as kyc_agent_router
 
 _log_level = os.getenv("LOG_LEVEL", "INFO").upper()
 logging.basicConfig(
@@ -88,6 +89,7 @@ async def _background_tasks(app: FastAPI) -> None:
       1. LLM-enhance the graph (if not already done and LLM creds present)
       2. Generate knowledge file (if empty and LLM creds present)
       3. Rebuild pipeline with fresh knowledge file
+      4. LLM-analyze business docs for rich knowledge entries
     """
     state = app.state
     config: AppConfig = state.config
@@ -136,6 +138,27 @@ async def _background_tasks(app: FastAPI) -> None:
         except Exception as exc:
             logger.warning("Knowledge file generation failed: %s", exc)
 
+    # ---- LLM business document analysis ----------------------------------
+    if llm is not None:
+        docs_dir = getattr(state, "docs_dir", "kyc_business_knowledge_agentic")
+        knowledge_store = getattr(state, "knowledge_store", None)
+        if knowledge_store:
+            logger.info("Starting LLM business document analysis in background…")
+            try:
+                from agent.llm_knowledge_analyzer import get_cached_or_analyze
+                cache_dir = os.getenv("GRAPH_CACHE_PATH", "")
+                llm_entries = await anyio.to_thread.run_sync(
+                    lambda: get_cached_or_analyze(llm, docs_dir, cache_dir or None)
+                )
+                if llm_entries:
+                    knowledge_store.replace_entries_by_source("llm_analysis", llm_entries)
+                    logger.info(
+                        "LLM document analysis complete: %d rich entries added",
+                        len(llm_entries),
+                    )
+            except Exception as exc:
+                logger.warning("LLM document analysis failed (regex entries still active): %s", exc)
+
 
 # ---------------------------------------------------------------------------
 # Lifespan
@@ -179,6 +202,22 @@ async def lifespan(app: FastAPI):
     app.state.graph = bundle.graph
     app.state.graph_llm_enhanced = bundle.llm_enhanced
     app.state.oracle_connected = bundle.graph.count_nodes("Table") > 0
+
+    # Initialize KYC Knowledge Store
+    logger.info("Initializing KYC knowledge store…")
+    from agent.knowledge_store import KYCKnowledgeStore
+    from agent.business_doc_loader import load_all_business_knowledge
+    knowledge_store = KYCKnowledgeStore()
+    docs_dir = os.getenv("KYC_DOCS_DIR", "kyc_business_knowledge_agentic")
+    biz_entries = await anyio.to_thread.run_sync(
+        lambda: load_all_business_knowledge(docs_dir)
+    )
+    knowledge_store.add_static_entries(biz_entries)
+    app.state.knowledge_store = knowledge_store
+    app.state.docs_dir = docs_dir  # for background LLM analysis
+    config._knowledge_store = knowledge_store  # type: ignore[attr-defined]
+    logger.info("Knowledge store ready: %d static entries, %d learned patterns",
+                len(knowledge_store.static_entries), len(knowledge_store.learned_patterns))
 
     # Build pipeline
     logger.info("Building NL-to-SQL pipeline…")
@@ -227,6 +266,7 @@ app.include_router(schema.router, prefix="/api")
 app.include_router(graph_router.router, prefix="/api")
 app.include_router(admin.router, prefix="/api")
 app.include_router(prompts_router.router, prefix="/api")
+app.include_router(kyc_agent_router.router, prefix="/api")
 
 # ---------------------------------------------------------------------------
 # Static file serving — React SPA (must come AFTER all API routers)

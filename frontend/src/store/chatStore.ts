@@ -13,11 +13,15 @@ interface ChatStore {
   activeBaseQuery: string
   /** All clarification Q&A pairs gathered so far for the current topic. */
   clarificationPairs: ClarificationPair[]
+  /** Last successful query result (non-error) for follow-up context. */
+  lastSuccessfulResult: QueryResult | null
 
   addUserMessage(content: string): void
   addResultMessage(result: QueryResult): void
   addErrorMessage(content: string): void
   addClarificationMessage(question: string, options: string[], context?: string, multiSelect?: boolean): void
+  addSqlPreviewMessage(sql: string, explanation: string, validationPassed: boolean, validationErrors: string[]): void
+  addSqlCandidatesMessage(candidates: Array<{ id: string; interpretation: string; sql: string; explanation: string }>): void
   markClarificationAnswered(id: string): void
   /** Save the original query that started the current topic. */
   setActiveBaseQuery(query: string): void
@@ -29,6 +33,12 @@ interface ChatStore {
    * This is what gets sent as user_input when answering a clarification.
    */
   getCumulativeQuery(): string
+  /**
+   * Check if newInput looks like a follow-up referencing previous results.
+   * If so AND lastSuccessfulResult exists, append context.
+   * Otherwise return newInput unchanged.
+   */
+  getFollowUpContext(newInput: string): string
   /** Replace current chat with a saved session. */
   restoreSession(messages: ChatMessage[], history: ConversationMessage[]): void
   clearMessages(): void
@@ -43,6 +53,7 @@ export const useChatStore = create<ChatStore>((set, get) => ({
   history: [],
   activeBaseQuery: '',
   clarificationPairs: [],
+  lastSuccessfulResult: null,
 
   addUserMessage: (content) =>
     set((state) => ({
@@ -66,6 +77,8 @@ export const useChatStore = create<ChatStore>((set, get) => ({
       // Reset clarification chain on successful result
       clarificationPairs: [],
       activeBaseQuery: '',
+      // Track last successful result for follow-up context
+      lastSuccessfulResult: result.type !== 'error' ? result : state.lastSuccessfulResult,
     })),
 
   addErrorMessage: (content) =>
@@ -99,6 +112,34 @@ export const useChatStore = create<ChatStore>((set, get) => ({
       ].slice(-20),
     })),
 
+  addSqlPreviewMessage: (sql, explanation, validationPassed, validationErrors) =>
+    set((state) => ({
+      messages: [
+        ...state.messages,
+        {
+          id: makeId(),
+          type: 'sql_preview' as const,
+          content: explanation,
+          sqlPreview: { sql, explanation, validationPassed, validationErrors },
+          timestamp: new Date(),
+        },
+      ],
+    })),
+
+  addSqlCandidatesMessage: (candidates) =>
+    set((state) => ({
+      messages: [
+        ...state.messages,
+        {
+          id: makeId(),
+          type: 'sql_candidates' as const,
+          content: `${candidates.length} SQL interpretation${candidates.length !== 1 ? 's' : ''} available`,
+          sqlCandidates: candidates,
+          timestamp: new Date(),
+        },
+      ],
+    })),
+
   markClarificationAnswered: (id) =>
     set((state) => ({
       messages: state.messages.map((m) =>
@@ -123,9 +164,19 @@ export const useChatStore = create<ChatStore>((set, get) => ({
     return `${activeBaseQuery}\n\nAdditional requirements clarified:\n${refinements}`
   },
 
+  getFollowUpContext: (newInput: string) => {
+    const { lastSuccessfulResult } = get()
+    const followUpPatterns = /\b(those|that|them|the results|now |also |but |filter|sort|group by|break down|only active|exclude)\b/i
+    if (followUpPatterns.test(newInput) && lastSuccessfulResult) {
+      const { sql, total_rows, columns, explanation } = lastSuccessfulResult
+      return `${newInput}\n\n[Context: Previous query was: ${sql}\nReturned ${total_rows} rows, columns: ${columns.join(', ')}\nExplanation: ${explanation}]`
+    }
+    return newInput
+  },
+
   clearMessages: () =>
-    set({ messages: [], history: [], activeBaseQuery: '', clarificationPairs: [] }),
+    set({ messages: [], history: [], activeBaseQuery: '', clarificationPairs: [], lastSuccessfulResult: null }),
 
   restoreSession: (messages, history) =>
-    set({ messages, history, activeBaseQuery: '', clarificationPairs: [] }),
+    set({ messages, history, activeBaseQuery: '', clarificationPairs: [], lastSuccessfulResult: null }),
 }))

@@ -12,6 +12,23 @@ from pydantic import BaseModel
 class QueryRequest(BaseModel):
     user_input: str
     conversation_history: List[Dict[str, Any]] = []
+    previous_sql_context: Optional[Dict[str, Any]] = None
+    auto_execute: bool = False
+
+
+class ExecuteConfirmedSqlRequest(BaseModel):
+    """Execute a user-confirmed SQL query (skip full pipeline)."""
+    sql: str
+    user_input: str = ""
+    conversation_history: List[Dict[str, Any]] = []
+
+
+class ExecuteCandidateRequest(BaseModel):
+    """Execute a user-selected SQL candidate (validate → optimize → present)."""
+    sql: str
+    explanation: str = ""
+    user_input: str = ""
+    conversation_history: List[Dict[str, Any]] = []
 
 
 class SQLExecuteRequest(BaseModel):
