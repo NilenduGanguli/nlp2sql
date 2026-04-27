@@ -19,7 +19,7 @@ import json
 import logging
 import threading
 import time
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Literal, Optional
 
 from fastapi import APIRouter, Depends
 from sse_starlette.sse import EventSourceResponse
@@ -579,6 +579,7 @@ class _AcceptQueryRequest(_BaseModel):
     rejected_candidates: _List[_RejectedCandidate] = []
     executed_candidate_id: Optional[str] = None
     session_digest: Dict[str, Any] = {}
+    mode: Optional[Literal["curator", "consumer"]] = None
 
 @router.post("/query/accept-query")
 async def accept_query(

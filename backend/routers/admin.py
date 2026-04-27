@@ -147,6 +147,7 @@ async def get_llm_config(config=Depends(get_config)):
         has_api_key=bool(config.llm_api_key),
         vertex_project=getattr(config, "vertex_project", ""),
         vertex_location=getattr(config, "vertex_location", "us-central1"),
+        default_user_mode=os.environ.get("DEFAULT_USER_MODE", "curator"),
     )
 
 

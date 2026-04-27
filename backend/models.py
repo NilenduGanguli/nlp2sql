@@ -1,7 +1,7 @@
 """Pydantic request/response models for the KnowledgeQL API."""
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Literal, Optional
 from pydantic import BaseModel
 
 
@@ -14,6 +14,7 @@ class QueryRequest(BaseModel):
     conversation_history: List[Dict[str, Any]] = []
     previous_sql_context: Optional[Dict[str, Any]] = None
     auto_execute: bool = False
+    mode: Optional[Literal["curator", "consumer"]] = None
 
 
 class ExecuteConfirmedSqlRequest(BaseModel):
@@ -239,6 +240,7 @@ class ConfigResponse(BaseModel):
     has_api_key: bool
     vertex_project: str = ""
     vertex_location: str = "us-central1"
+    default_user_mode: str = "curator"
 
 
 class ConfigUpdateRequest(BaseModel):
