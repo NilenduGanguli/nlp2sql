@@ -131,6 +131,8 @@ export interface ChatMessage {
   answered?: boolean     // true once the user has responded
   sqlPreview?: { sql: string; explanation: string; validationPassed: boolean; validationErrors: string[] }
   sqlCandidates?: Array<{ id: string; interpretation: string; sql: string; explanation: string }>
+  /** True when these candidates were short-circuited from a saved query_session entry. */
+  reusedFromSession?: boolean
   kycAutoAnswer?: { question: string; autoAnswer: string; source: string }
   timestamp: Date
 }

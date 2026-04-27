@@ -1,9 +1,42 @@
 import { create } from 'zustand'
-import type { ChatMessage, ConversationMessage, QueryResult } from '../types'
+import type { ChatMessage, ConversationMessage, QueryResult, TraceStep } from '../types'
 
 interface ClarificationPair {
   question: string
   answer: string
+}
+
+export interface SessionDigest {
+  tool_calls: Array<{ tool: string; args: Record<string, unknown>; result_summary: string }>
+  schema_context_tables: string[]
+  intent: string
+  entities: Record<string, unknown>
+  enriched_query: string
+  clarifications: Array<{ question: string; answer: string }>
+  validation_retries: number
+}
+
+const _MAX_TOOL_CALLS = 30
+const _MAX_RESULT_SUMMARY_CHARS = 200
+
+const _emptyDigest = (): SessionDigest => ({
+  tool_calls: [],
+  schema_context_tables: [],
+  intent: 'DATA_QUERY',
+  entities: {},
+  enriched_query: '',
+  clarifications: [],
+  validation_retries: 0,
+})
+
+function _summarizeOp(op: { op: string; params?: Record<string, unknown>; result_count?: number; result_sample?: unknown[] }): { tool: string; args: Record<string, unknown>; result_summary: string } {
+  const sample = op.result_sample ?? []
+  const summary = `count=${op.result_count ?? 0}; sample=${JSON.stringify(sample)}`
+  return {
+    tool: op.op ?? '',
+    args: op.params ?? {},
+    result_summary: summary.slice(0, _MAX_RESULT_SUMMARY_CHARS),
+  }
 }
 
 interface ChatStore {
@@ -15,13 +48,17 @@ interface ChatStore {
   clarificationPairs: ClarificationPair[]
   /** Last successful query result (non-error) for follow-up context. */
   lastSuccessfulResult: QueryResult | null
+  /** Accumulated digest of the current turn (tool calls, schema, etc.). Used to seed accept-query. */
+  currentSessionDigest: SessionDigest
+  /** Set true when the latest assistant turn was short-circuited from a saved session. */
+  lastReusedFromSession: boolean
 
   addUserMessage(content: string): void
   addResultMessage(result: QueryResult): void
   addErrorMessage(content: string): void
   addClarificationMessage(question: string, options: string[], context?: string, multiSelect?: boolean): void
   addSqlPreviewMessage(sql: string, explanation: string, validationPassed: boolean, validationErrors: string[]): void
-  addSqlCandidatesMessage(candidates: Array<{ id: string; interpretation: string; sql: string; explanation: string }>): void
+  addSqlCandidatesMessage(candidates: Array<{ id: string; interpretation: string; sql: string; explanation: string }>, reusedFromSession?: boolean): void
   /** Add an auto-answer message from the KYC business agent + mark latest clarification as answered. */
   addKycAutoAnswerMessage(question: string, autoAnswer: string, source: string): void
   markClarificationAnswered(id: string): void
@@ -29,6 +66,12 @@ interface ChatStore {
   setActiveBaseQuery(query: string): void
   /** Accumulate a clarification answer into the running requirements. */
   addClarificationPair(question: string, answer: string): void
+  /** Reset accumulated session digest at the start of a fresh turn. */
+  resetSessionDigest(): void
+  /** Append a trace step's graph_ops to the running digest. */
+  recordTraceForDigest(traceStep: TraceStep): void
+  /** Mark that the next assistant turn comes from a saved session. */
+  setReusedFromSession(value: boolean): void
   /**
    * Build a self-contained cumulative query that packages the original question
    * plus all clarification requirements gathered so far.
@@ -56,6 +99,8 @@ export const useChatStore = create<ChatStore>((set, get) => ({
   activeBaseQuery: '',
   clarificationPairs: [],
   lastSuccessfulResult: null,
+  currentSessionDigest: _emptyDigest(),
+  lastReusedFromSession: false,
 
   addUserMessage: (content) =>
     set((state) => ({
@@ -128,7 +173,7 @@ export const useChatStore = create<ChatStore>((set, get) => ({
       ],
     })),
 
-  addSqlCandidatesMessage: (candidates) =>
+  addSqlCandidatesMessage: (candidates, reusedFromSession) =>
     set((state) => ({
       messages: [
         ...state.messages,
@@ -137,6 +182,7 @@ export const useChatStore = create<ChatStore>((set, get) => ({
           type: 'sql_candidates' as const,
           content: `${candidates.length} SQL interpretation${candidates.length !== 1 ? 's' : ''} available`,
           sqlCandidates: candidates,
+          reusedFromSession: reusedFromSession ?? state.lastReusedFromSession,
           timestamp: new Date(),
         },
       ],
@@ -180,7 +226,52 @@ export const useChatStore = create<ChatStore>((set, get) => ({
   addClarificationPair: (question, answer) =>
     set((state) => ({
       clarificationPairs: [...state.clarificationPairs, { question, answer }],
+      currentSessionDigest: {
+        ...state.currentSessionDigest,
+        clarifications: [
+          ...state.currentSessionDigest.clarifications,
+          { question, answer },
+        ],
+      },
     })),
+
+  resetSessionDigest: () => set({ currentSessionDigest: _emptyDigest(), lastReusedFromSession: false }),
+
+  setReusedFromSession: (value) => set({ lastReusedFromSession: value }),
+
+  recordTraceForDigest: (traceStep) =>
+    set((state) => {
+      const digest = state.currentSessionDigest
+      const next = { ...digest }
+      const summary = (traceStep.output_summary ?? {}) as Record<string, unknown>
+      if (traceStep.node === 'enrich_query' && typeof summary.enriched === 'string') {
+        next.enriched_query = summary.enriched as string
+      }
+      if (traceStep.node === 'classify_intent' && typeof summary.intent === 'string') {
+        next.intent = summary.intent as string
+      }
+      if (traceStep.node === 'extract_entities' && typeof summary.entities === 'object' && summary.entities !== null) {
+        next.entities = summary.entities as Record<string, unknown>
+      }
+      if (traceStep.node === 'retrieve_schema' && Array.isArray(summary.tables)) {
+        next.schema_context_tables = summary.tables as string[]
+      }
+      if (traceStep.node === 'validate_sql' && typeof summary.retry_count === 'number') {
+        next.validation_retries = summary.retry_count as number
+      }
+      const ops = traceStep.graph_ops ?? []
+      if (ops.length > 0 && next.tool_calls.length < _MAX_TOOL_CALLS) {
+        const room = _MAX_TOOL_CALLS - next.tool_calls.length
+        const newCalls = ops.slice(0, room).map((op) => _summarizeOp({
+          op: op.op,
+          params: op.params,
+          result_count: op.result_count,
+          result_sample: op.result_sample,
+        }))
+        next.tool_calls = [...next.tool_calls, ...newCalls]
+      }
+      return { currentSessionDigest: next }
+    }),
 
   getCumulativeQuery: () => {
     const { activeBaseQuery, clarificationPairs } = get()
@@ -203,8 +294,14 @@ export const useChatStore = create<ChatStore>((set, get) => ({
   },
 
   clearMessages: () =>
-    set({ messages: [], history: [], activeBaseQuery: '', clarificationPairs: [], lastSuccessfulResult: null }),
+    set({
+      messages: [], history: [], activeBaseQuery: '', clarificationPairs: [],
+      lastSuccessfulResult: null, currentSessionDigest: _emptyDigest(), lastReusedFromSession: false,
+    }),
 
   restoreSession: (messages, history) =>
-    set({ messages, history, activeBaseQuery: '', clarificationPairs: [], lastSuccessfulResult: null }),
+    set({
+      messages, history, activeBaseQuery: '', clarificationPairs: [],
+      lastSuccessfulResult: null, currentSessionDigest: _emptyDigest(), lastReusedFromSession: false,
+    }),
 }))

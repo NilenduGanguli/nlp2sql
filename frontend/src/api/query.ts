@@ -5,26 +5,50 @@ interface ClarificationPair {
   answer: string
 }
 
+export interface AcceptedCandidatePayload {
+  id: string
+  sql: string
+  explanation: string
+  interpretation: string
+}
+
+export interface RejectedCandidatePayload extends AcceptedCandidatePayload {
+  rejection_reason?: string
+}
+
+export interface SessionMatchEvent {
+  matched_entry_id: string
+  candidates: Array<{ id: string; interpretation: string; sql: string; explanation: string }>
+  original_query: string
+}
+
 /**
- * Send accept/reject feedback for a generated query.
- * When accepted, the backend records conversation context as learned patterns.
+ * Send accept feedback for a generated query, including all candidate
+ * interpretations the user accepted/rejected and a session digest used
+ * for comprehensive session learning.
  */
 export async function acceptGeneratedQuery(
-  sql: string,
-  explanation: string,
   userInput: string,
+  acceptedCandidates: AcceptedCandidatePayload[],
+  rejectedCandidates: RejectedCandidatePayload[],
+  executedCandidateId: string | null,
   clarificationPairs: ClarificationPair[],
-  accepted: boolean,
+  sessionDigest: Record<string, unknown>,
 ): Promise<{ status: string }> {
   const res = await fetch('/api/query/accept-query', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
-      sql,
-      explanation,
       user_input: userInput,
+      accepted_candidates: acceptedCandidates,
+      rejected_candidates: rejectedCandidates,
+      executed_candidate_id: executedCandidateId,
       clarification_pairs: clarificationPairs,
-      accepted,
+      session_digest: sessionDigest,
+      // Legacy fields for backward-compat with any older server:
+      sql: acceptedCandidates[0]?.sql ?? '',
+      explanation: acceptedCandidates[0]?.explanation ?? '',
+      accepted: acceptedCandidates.length > 0,
     }),
   })
   return res.json()
@@ -72,6 +96,7 @@ export function streamQuery(
   onSqlReady?: (data: { sql: string; explanation: string; validation_passed: boolean; validation_errors: string[] }) => void,
   onSqlCandidates?: (candidates: Array<{ id: string; interpretation: string; sql: string; explanation: string }>) => void,
   onKycAutoAnswer?: (data: { question: string; auto_answer: string; source: string }) => void,
+  onSessionMatch?: (data: SessionMatchEvent) => void,
 ): AbortController {
   const controller = new AbortController()
 
@@ -148,6 +173,9 @@ export function streamQuery(
                 break
               case 'kyc_auto_answer':
                 onKycAutoAnswer?.(event.data as { question: string; auto_answer: string; source: string })
+                break
+              case 'session_match':
+                onSessionMatch?.(event.data as unknown as SessionMatchEvent)
                 break
               case 'error':
                 onError((event.data.message as string) ?? 'Unknown error')

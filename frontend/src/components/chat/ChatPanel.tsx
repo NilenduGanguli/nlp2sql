@@ -36,6 +36,9 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ onOpenInEditor }) => {
     getCumulativeQuery,
     getFollowUpContext,
     clearMessages,
+    resetSessionDigest,
+    recordTraceForDigest,
+    setReusedFromSession,
   } = useChatStore()
   const { saveSession } = useChatHistoryStore()
   const { startQuery, addLiveStep, finalizeTrace } = useTraceStore()
@@ -84,7 +87,10 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ onOpenInEditor }) => {
           setIsStreaming(false)
           setCompletedSteps([])
         },
-        (step) => addLiveStep(step),
+        (step) => {
+          addLiveStep(step)
+          recordTraceForDigest(step)
+        },
         // onSqlReady — backend paused before execution, show preview card
         (data) => {
           addSqlPreviewMessage(
@@ -107,10 +113,14 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ onOpenInEditor }) => {
           addKycAutoAnswerMessage(data.question, data.auto_answer, data.source)
           setIsStreaming(true)
         },
+        // onSessionMatch — pipeline short-circuited from a saved session
+        (_data) => {
+          setReusedFromSession(true)
+        },
       )
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [addResultMessage, addErrorMessage, addClarificationMessage, addSqlPreviewMessage, addSqlCandidatesMessage, addKycAutoAnswerMessage, addLiveStep, finalizeTrace, startQuery],
+    [addResultMessage, addErrorMessage, addClarificationMessage, addSqlPreviewMessage, addSqlCandidatesMessage, addKycAutoAnswerMessage, addLiveStep, finalizeTrace, startQuery, recordTraceForDigest, setReusedFromSession],
   )
 
   /** Fresh query submitted by the user via the input box. */
@@ -119,6 +129,8 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ onOpenInEditor }) => {
       if (!content.trim() || isStreaming) return
       // Save as the base query for any clarification chain that follows
       setActiveBaseQuery(content)
+      // Reset accumulated session digest at the start of a fresh turn
+      resetSessionDigest()
       const historySnap = [...history]
       setInput('')
       addUserMessage(content)
@@ -127,7 +139,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ onOpenInEditor }) => {
       _stream(enrichedInput, historySnap)
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [isStreaming, history, _stream, getFollowUpContext],
+    [isStreaming, history, _stream, getFollowUpContext, resetSessionDigest],
   )
 
   const handleSubmit = useCallback(() => {
@@ -279,18 +291,38 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ onOpenInEditor }) => {
   /**
    * Called when user clicks thumbs up/down on an SqlPreviewCard.
    * Sends feedback to the backend to record (or skip) in the KYC knowledge store.
+   * Wraps the single SQL into a one-element accepted_candidates array so the
+   * backend's new multi-candidate route can normalize it.
    */
   const handleAcceptQuery = useCallback(
     (_messageId: string, sql: string, accepted: boolean) => {
       const queryContext = activeBaseQuery || lastUserInputRef.current
-      const { clarificationPairs } = useChatStore.getState()
+      const { clarificationPairs, currentSessionDigest } = useChatStore.getState()
       // Find the explanation from the sql_preview message
       const msg = messages.find((m) => m.id === _messageId)
       const explanation = msg?.sqlPreview?.explanation ?? ''
 
-      acceptGeneratedQuery(sql, explanation, queryContext, clarificationPairs, accepted).catch(
-        (err) => console.warn('Failed to send query feedback:', err),
-      )
+      if (!accepted) {
+        // Rejection — clear path: send single-candidate rejection.
+        acceptGeneratedQuery(
+          queryContext,
+          [],
+          [{ id: 'legacy', sql, explanation, interpretation: 'primary' }],
+          null,
+          clarificationPairs,
+          currentSessionDigest as unknown as Record<string, unknown>,
+        ).catch((err) => console.warn('Failed to send query feedback:', err))
+        return
+      }
+
+      acceptGeneratedQuery(
+        queryContext,
+        [{ id: 'legacy', sql, explanation, interpretation: 'primary' }],
+        [],
+        'legacy',
+        clarificationPairs,
+        currentSessionDigest as unknown as Record<string, unknown>,
+      ).catch((err) => console.warn('Failed to send query feedback:', err))
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [activeBaseQuery, messages],
