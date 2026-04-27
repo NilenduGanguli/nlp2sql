@@ -329,6 +329,101 @@ def analyze_accepted_query(
     return entries
 
 
+def _load_session_analyzer_prompt() -> str:
+    prompt_path = os.path.join(
+        os.path.dirname(os.path.dirname(__file__)),
+        "prompts",
+        "session_analyzer_system.txt",
+    )
+    try:
+        with open(prompt_path, "r") as f:
+            return f.read().strip()
+    except Exception:
+        return (
+            "You are a KYC analyst. Produce a JSON object {title, content} that "
+            "comprehensively documents the provided query session for future reuse."
+        )
+
+
+def analyze_accepted_session(llm, digest: Dict[str, Any]) -> Optional[KnowledgeEntry]:
+    """Produce ONE comprehensive KnowledgeEntry from a SessionDigest.
+
+    Returns None on missing input or LLM/parse failure (caller falls back to
+    narrow per-clarification recording).
+    """
+    if not digest:
+        return None
+    accepted = [c for c in digest.get("candidates", []) if c.get("accepted")]
+    if not accepted:
+        return None
+
+    system_prompt = _load_session_analyzer_prompt()
+    user_message = "Session digest (JSON):\n" + json.dumps(digest, indent=2, default=str)
+
+    try:
+        from langchain_core.messages import HumanMessage, SystemMessage
+        response = llm.invoke([
+            SystemMessage(content=system_prompt),
+            HumanMessage(content=user_message),
+        ])
+        raw = response.content if hasattr(response, "content") else str(response)
+    except Exception as exc:
+        logger.warning("Session analyzer LLM call failed: %s", exc)
+        return None
+
+    try:
+        parsed = _parse_llm_json(raw)
+    except (ValueError, json.JSONDecodeError) as exc:
+        logger.warning("Session analyzer parse failed: %s", exc)
+        return None
+
+    if not isinstance(parsed, dict):
+        return None
+    title = str(parsed.get("title", "")).strip()
+    content = str(parsed.get("content", "")).strip()
+    if not content:
+        return None
+    if title:
+        full_content = f"{title}\n{content}"
+    else:
+        full_content = content
+
+    rejected = [c for c in digest.get("candidates", []) if not c.get("accepted")]
+    metadata = {
+        "session_id": digest.get("session_id", ""),
+        "title": title,
+        "original_query": digest.get("original_query", ""),
+        "enriched_query": digest.get("enriched_query", ""),
+        "accepted_candidates": [
+            {"interpretation": c.get("interpretation", ""), "sql": c.get("sql", ""),
+             "explanation": c.get("explanation", "")}
+            for c in accepted
+        ],
+        "rejected_candidates": [
+            {"interpretation": c.get("interpretation", ""), "sql": c.get("sql", ""),
+             "rejection_reason": c.get("rejection_reason", "")}
+            for c in rejected
+        ],
+        "clarifications": digest.get("clarifications", []),
+        "tables_used": digest.get("schema_context_tables", []),
+        "tool_calls_summary": digest.get("tool_calls", []),
+        "result_shape": digest.get("result_shape", {}),
+        "created_at": digest.get("created_at", time.time()),
+    }
+    eid = hashlib.sha1(
+        f"query_session:{metadata['original_query']}:{metadata['created_at']}".encode()
+    ).hexdigest()[:16]
+    entry = KnowledgeEntry(
+        id=eid,
+        source="query_session",
+        category="query_session",
+        content=full_content,
+        metadata=metadata,
+    )
+    logger.info("Session analyzer produced entry %s for: %s", eid, metadata["original_query"][:60])
+    return entry
+
+
 # ---------------------------------------------------------------------------
 # 3. Cached Document Analysis
 # ---------------------------------------------------------------------------
