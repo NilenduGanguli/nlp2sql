@@ -11,6 +11,7 @@ import { PromptStudioPage } from './pages/PromptStudioPage'
 import { KYCAgentPage } from './pages/KYCAgentPage'
 import { SchemaTab } from './components/schema/SchemaTab'
 import { useChatStore } from './store/chatStore'
+import { useUserMode } from './hooks/useUserMode'
 import type { ChatSession } from './types'
 
 export default function App() {
@@ -33,6 +34,20 @@ export default function App() {
     restoreSession(session.messages, session.history)
     setActiveTab('chat')
   }
+
+  useEffect(() => {
+    // Only sync if user has never set the mode (no localStorage entry)
+    if (!localStorage.getItem('nlp2sql.userMode')) {
+      fetch('/api/admin/config')
+        .then((r) => r.json())
+        .then((cfg) => {
+          if (cfg.default_user_mode === 'consumer' || cfg.default_user_mode === 'curator') {
+            useUserMode.getState().setMode(cfg.default_user_mode)
+          }
+        })
+        .catch(() => {}) // Silently ignore — defaults to 'curator' from hook
+    }
+  }, [])
 
   useEffect(() => {
     const handler = (e: Event) => {

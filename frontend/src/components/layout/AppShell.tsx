@@ -1,5 +1,6 @@
 import React, { useState } from 'react'
 import { Sidebar } from './Sidebar'
+import { ModeToggle } from './ModeToggle'
 
 export type TabId = 'chat' | 'editor' | 'schema' | 'graph' | 'relationships' | 'history' | 'investigate' | 'prompt_studio' | 'kyc_agent'
 
@@ -96,6 +97,9 @@ export const AppShell: React.FC<AppShellProps> = ({
               </button>
             )
           })}
+          <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 8 }}>
+            <ModeToggle />
+          </div>
         </nav>
 
         {/* Page content */}
