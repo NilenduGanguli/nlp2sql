@@ -91,10 +91,12 @@ export const SqlCandidatesPicker: React.FC<SqlCandidatesPickerProps> = ({
           {reusedFromSession ? '\u267B ' : ''}
           {headerLabel}
         </div>
-        <div style={{ fontSize: 12, color: '#7a7a9a', lineHeight: 1.5 }}>
-          Check each interpretation that is valid for your question. Pick one to execute now.
-          The set you accept will be remembered so we can answer similar questions without re-asking.
-        </div>
+        {mode === 'curator' && (
+          <div style={{ fontSize: 12, color: '#7a7a9a', lineHeight: 1.5 }}>
+            Check each interpretation that is valid for your question. Pick one to execute now.
+            The set you accept will be remembered so we can answer similar questions without re-asking.
+          </div>
+        )}
       </div>
 
       <div
@@ -123,13 +125,15 @@ export const SqlCandidatesPicker: React.FC<SqlCandidatesPickerProps> = ({
             >
               <div style={{ padding: '10px 14px' }}>
                 <div style={{ display: 'flex', alignItems: 'flex-start', gap: 10 }}>
-                  <input
-                    type="checkbox"
-                    checked={isChecked}
-                    onChange={() => toggleChecked(candidate.id)}
-                    disabled={submitted}
-                    style={{ marginTop: 4, accentColor: '#7c6af7' }}
-                  />
+                  {mode === 'curator' && (
+                    <input
+                      type="checkbox"
+                      checked={isChecked}
+                      onChange={() => toggleChecked(candidate.id)}
+                      disabled={submitted}
+                      style={{ marginTop: 4, accentColor: '#7c6af7' }}
+                    />
+                  )}
                   <span
                     style={{
                       width: 22,
@@ -289,7 +293,13 @@ export const SqlCandidatesPicker: React.FC<SqlCandidatesPickerProps> = ({
               opacity: submitted || checkedIds.size === 0 ? 0.6 : 1,
             }}
           >
-            {submitted ? '\u2713 Saved' : `Accept Selected (${checkedIds.size}) & Run`}
+            {submitted
+              ? mode === 'curator'
+                ? '\u2713 Saved'
+                : '\u2713 Done'
+              : mode === 'curator'
+                ? `Accept Selected (${checkedIds.size}) & Run`
+                : 'Run'}
           </button>
         </div>
       </div>

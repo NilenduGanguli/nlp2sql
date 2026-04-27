@@ -1,4 +1,5 @@
 import React, { useCallback } from 'react'
+import { useUserMode } from '../../hooks/useUserMode'
 
 interface SqlPreviewCardProps {
   sql: string
@@ -23,6 +24,7 @@ export const SqlPreviewCard: React.FC<SqlPreviewCardProps> = ({
   isExecuting = false,
   executed = false,
 }) => {
+  const { mode } = useUserMode()
   const [copied, setCopied] = React.useState(false)
   const [feedback, setFeedback] = React.useState<'accepted' | 'rejected' | null>(null)
 
@@ -268,87 +270,89 @@ export const SqlPreviewCard: React.FC<SqlPreviewCardProps> = ({
           `}</style>
         </div>
       )}
-      {/* Accept / Reject feedback */}
-      <div
-        style={{
-          display: 'flex',
-          alignItems: 'center',
-          gap: 8,
-          padding: '8px 14px',
-          borderTop: '1px solid #3a3a5c',
-        }}
-      >
-        <span style={{ fontSize: 12, color: '#7a7a9a', marginRight: 4 }}>
-          Accept generated query?
-        </span>
-        {feedback === null ? (
-          <>
-            <button
-              onClick={handleAccept}
-              title="Accept — save this query pattern to knowledge base"
-              style={{
-                padding: '4px 12px',
-                background: 'rgba(74,222,128,0.1)',
-                border: '1px solid rgba(74,222,128,0.3)',
-                borderRadius: 6,
-                color: '#4ade80',
-                fontSize: 16,
-                cursor: 'pointer',
-                display: 'flex',
-                alignItems: 'center',
-                gap: 4,
-                transition: 'all 0.15s',
-              }}
-              onMouseEnter={(e) => {
-                ;(e.currentTarget as HTMLElement).style.background = 'rgba(74,222,128,0.2)'
-              }}
-              onMouseLeave={(e) => {
-                ;(e.currentTarget as HTMLElement).style.background = 'rgba(74,222,128,0.1)'
-              }}
-            >
-              {'👍'}
-            </button>
-            <button
-              onClick={handleReject}
-              title="Reject — do not learn from this query"
-              style={{
-                padding: '4px 12px',
-                background: 'rgba(248,113,113,0.1)',
-                border: '1px solid rgba(248,113,113,0.3)',
-                borderRadius: 6,
-                color: '#f87171',
-                fontSize: 16,
-                cursor: 'pointer',
-                display: 'flex',
-                alignItems: 'center',
-                gap: 4,
-                transition: 'all 0.15s',
-              }}
-              onMouseEnter={(e) => {
-                ;(e.currentTarget as HTMLElement).style.background = 'rgba(248,113,113,0.2)'
-              }}
-              onMouseLeave={(e) => {
-                ;(e.currentTarget as HTMLElement).style.background = 'rgba(248,113,113,0.1)'
-              }}
-            >
-              {'👎'}
-            </button>
-          </>
-        ) : (
-          <span
-            style={{
-              fontSize: 12,
-              fontWeight: 600,
-              color: feedback === 'accepted' ? '#4ade80' : '#f87171',
-              display: 'flex',
-              alignItems: 'center',
-              gap: 4,
-            }}
-          >
-            {feedback === 'accepted' ? '👍 Accepted — saved to knowledge base' : '👎 Rejected'}
+      {/* Accept / Reject feedback — curator only */}
+      {mode === 'curator' && (
+        <div
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: 8,
+            padding: '8px 14px',
+            borderTop: '1px solid #3a3a5c',
+          }}
+        >
+          <span style={{ fontSize: 12, color: '#7a7a9a', marginRight: 4 }}>
+            Accept generated query?
           </span>
-        )}
-      </div>
+          {feedback === null ? (
+            <>
+              <button
+                onClick={handleAccept}
+                title="Accept — save this query pattern to knowledge base"
+                style={{
+                  padding: '4px 12px',
+                  background: 'rgba(74,222,128,0.1)',
+                  border: '1px solid rgba(74,222,128,0.3)',
+                  borderRadius: 6,
+                  color: '#4ade80',
+                  fontSize: 16,
+                  cursor: 'pointer',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 4,
+                  transition: 'all 0.15s',
+                }}
+                onMouseEnter={(e) => {
+                  ;(e.currentTarget as HTMLElement).style.background = 'rgba(74,222,128,0.2)'
+                }}
+                onMouseLeave={(e) => {
+                  ;(e.currentTarget as HTMLElement).style.background = 'rgba(74,222,128,0.1)'
+                }}
+              >
+                {'👍'}
+              </button>
+              <button
+                onClick={handleReject}
+                title="Reject — do not learn from this query"
+                style={{
+                  padding: '4px 12px',
+                  background: 'rgba(248,113,113,0.1)',
+                  border: '1px solid rgba(248,113,113,0.3)',
+                  borderRadius: 6,
+                  color: '#f87171',
+                  fontSize: 16,
+                  cursor: 'pointer',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 4,
+                  transition: 'all 0.15s',
+                }}
+                onMouseEnter={(e) => {
+                  ;(e.currentTarget as HTMLElement).style.background = 'rgba(248,113,113,0.2)'
+                }}
+                onMouseLeave={(e) => {
+                  ;(e.currentTarget as HTMLElement).style.background = 'rgba(248,113,113,0.1)'
+                }}
+              >
+                {'👎'}
+              </button>
+            </>
+          ) : (
+            <span
+              style={{
+                fontSize: 12,
+                fontWeight: 600,
+                color: feedback === 'accepted' ? '#4ade80' : '#f87171',
+                display: 'flex',
+                alignItems: 'center',
+                gap: 4,
+              }}
+            >
+              {feedback === 'accepted' ? '👍 Accepted — saved to knowledge base' : '👎 Rejected'}
+            </span>
+          )}
+        </div>
+      )}
     </div>
   )
 }
