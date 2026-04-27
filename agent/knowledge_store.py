@@ -127,12 +127,17 @@ class KYCKnowledgeStore:
                 LearnedPattern.from_dict(p) for p in data.get("learned_patterns", [])
             ]
             # Static entries are loaded fresh from docs at startup, but we
-            # also restore any manually-added ones.
+            # also restore any manually-added ones and accepted query sessions.
             for e in data.get("manual_entries", []):
                 self.static_entries.append(KnowledgeEntry.from_dict(e))
+            for e in data.get("session_entries", []):
+                self.static_entries.append(KnowledgeEntry.from_dict(e))
             logger.info(
-                "Knowledge store loaded: %d learned patterns, %d manual entries from %s",
-                len(self.learned_patterns), len(data.get("manual_entries", [])), self._persist_path,
+                "Knowledge store loaded: %d learned patterns, %d manual entries, %d session entries from %s",
+                len(self.learned_patterns),
+                len(data.get("manual_entries", [])),
+                len(data.get("session_entries", [])),
+                self._persist_path,
             )
         except Exception as exc:
             logger.warning("Could not load knowledge store from %s: %s", self._persist_path, exc)
@@ -145,6 +150,9 @@ class KYCKnowledgeStore:
             "learned_patterns": [p.to_dict() for p in self.learned_patterns],
             "manual_entries": [
                 e.to_dict() for e in self.static_entries if e.source == "manual"
+            ],
+            "session_entries": [
+                e.to_dict() for e in self.static_entries if e.source == "query_session"
             ],
         }
         tmp_path = self._persist_path + ".tmp"
