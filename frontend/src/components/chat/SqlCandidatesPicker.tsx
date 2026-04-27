@@ -9,20 +9,52 @@ interface SqlCandidate {
 
 interface SqlCandidatesPickerProps {
   candidates: SqlCandidate[]
-  onSelect: (candidate: SqlCandidate) => void
-  selected?: string // id of selected candidate (after user picks one)
+  /** Called when the user clicks "Accept Selected & Run". */
+  onAccept: (
+    accepted: SqlCandidate[],
+    rejected: SqlCandidate[],
+    executedId: string,
+  ) => void
+  reusedFromSession?: boolean
 }
 
 export const SqlCandidatesPicker: React.FC<SqlCandidatesPickerProps> = ({
   candidates,
-  onSelect,
-  selected,
+  onAccept,
+  reusedFromSession,
 }) => {
   const [expandedId, setExpandedId] = useState<string | null>(null)
+  const [checkedIds, setCheckedIds] = useState<Set<string>>(
+    new Set(candidates[0] ? [candidates[0].id] : []),
+  )
+  const [executeId, setExecuteId] = useState<string>(candidates[0]?.id ?? '')
+  const [submitted, setSubmitted] = useState(false)
 
-  const toggleExpand = (id: string) => {
-    setExpandedId((prev) => (prev === id ? null : id))
+  const toggleChecked = (id: string) => {
+    setCheckedIds((prev) => {
+      const next = new Set(prev)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      // Execute id must always be a checked candidate
+      if (!next.has(executeId) && next.size > 0) {
+        setExecuteId(Array.from(next)[0])
+      }
+      return next
+    })
   }
+
+  const handleAccept = () => {
+    if (submitted) return
+    const accepted = candidates.filter((c) => checkedIds.has(c.id))
+    const rejected = candidates.filter((c) => !checkedIds.has(c.id))
+    if (accepted.length === 0 || !executeId) return
+    setSubmitted(true)
+    onAccept(accepted, rejected, executeId)
+  }
+
+  const headerLabel = reusedFromSession
+    ? 'Reused from learned session'
+    : `Multiple Interpretations Found (${candidates.length})`
 
   return (
     <div
@@ -34,12 +66,11 @@ export const SqlCandidatesPicker: React.FC<SqlCandidatesPickerProps> = ({
         maxWidth: '100%',
       }}
     >
-      {/* Header */}
       <div
         style={{
           padding: '12px 16px',
           borderBottom: '1px solid #2a2a3e',
-          background: '#242438',
+          background: reusedFromSession ? 'rgba(74,222,128,0.08)' : '#242438',
         }}
       >
         <div
@@ -50,96 +81,83 @@ export const SqlCandidatesPicker: React.FC<SqlCandidatesPickerProps> = ({
             marginBottom: 4,
           }}
         >
-          Multiple Interpretations Found
+          {reusedFromSession ? '\u267B ' : ''}
+          {headerLabel}
         </div>
         <div style={{ fontSize: 12, color: '#7a7a9a', lineHeight: 1.5 }}>
-          Your query can be interpreted in {candidates.length} different ways.
-          Review and select the one that best matches your intent.
+          Check each interpretation that is valid for your question. Pick one to execute now.
+          The set you accept will be remembered so we can answer similar questions without re-asking.
         </div>
       </div>
 
-      {/* Candidate cards */}
-      <div style={{ padding: '8px 12px 12px', display: 'flex', flexDirection: 'column', gap: 8 }}>
+      <div
+        style={{
+          padding: '8px 12px 12px',
+          display: 'flex',
+          flexDirection: 'column',
+          gap: 8,
+        }}
+      >
         {candidates.map((candidate, index) => {
-          const isSelected = selected === candidate.id
-          const isGreyedOut = selected != null && !isSelected
+          const isChecked = checkedIds.has(candidate.id)
+          const isExecute = executeId === candidate.id
           const isExpanded = expandedId === candidate.id
 
           return (
             <div
               key={candidate.id}
               style={{
-                background: isSelected
-                  ? 'rgba(124,106,247,0.12)'
-                  : isGreyedOut
-                    ? 'rgba(30,30,46,0.5)'
-                    : 'rgba(42,42,62,0.6)',
-                border: `1px solid ${
-                  isSelected
-                    ? '#7c6af7'
-                    : isGreyedOut
-                      ? '#252538'
-                      : '#3a3a5c'
-                }`,
+                background: isChecked ? 'rgba(124,106,247,0.12)' : 'rgba(42,42,62,0.6)',
+                border: `1px solid ${isChecked ? '#7c6af7' : '#3a3a5c'}`,
                 borderRadius: 8,
                 overflow: 'hidden',
-                opacity: isGreyedOut ? 0.45 : 1,
                 transition: 'all 0.2s',
               }}
             >
-              {/* Candidate header */}
               <div style={{ padding: '10px 14px' }}>
-                <div
-                  style={{
-                    display: 'flex',
-                    alignItems: 'flex-start',
-                    gap: 10,
-                    marginBottom: 6,
-                  }}
-                >
-                  {/* Index badge */}
+                <div style={{ display: 'flex', alignItems: 'flex-start', gap: 10 }}>
+                  <input
+                    type="checkbox"
+                    checked={isChecked}
+                    onChange={() => toggleChecked(candidate.id)}
+                    disabled={submitted}
+                    style={{ marginTop: 4, accentColor: '#7c6af7' }}
+                  />
                   <span
                     style={{
                       width: 22,
                       height: 22,
                       borderRadius: '50%',
-                      background: isSelected
-                        ? '#7c6af7'
-                        : 'rgba(124,106,247,0.18)',
-                      border: `1px solid ${isSelected ? '#7c6af7' : 'rgba(124,106,247,0.35)'}`,
+                      background: isChecked ? '#7c6af7' : 'rgba(124,106,247,0.18)',
                       display: 'flex',
                       alignItems: 'center',
                       justifyContent: 'center',
                       fontSize: 11,
                       fontWeight: 600,
-                      color: isSelected ? '#fff' : '#a5b4fc',
+                      color: isChecked ? '#fff' : '#a5b4fc',
                       flexShrink: 0,
-                      marginTop: 1,
                     }}
                   >
-                    {isSelected ? '\u2713' : index + 1}
+                    {index + 1}
                   </span>
 
                   <div style={{ flex: 1, minWidth: 0 }}>
-                    {/* Interpretation text */}
                     <div
                       style={{
                         fontSize: 13,
                         fontWeight: 600,
-                        color: isGreyedOut ? '#5a5a7a' : '#e0e0f0',
+                        color: '#e0e0f0',
                         lineHeight: 1.5,
                         marginBottom: 4,
                       }}
                     >
                       {candidate.interpretation}
                     </div>
-
-                    {/* Explanation */}
                     <div
                       style={{
                         fontSize: 12,
                         fontStyle: 'italic',
-                        color: isGreyedOut ? '#4a4a6a' : '#7a7a9a',
+                        color: '#7a7a9a',
                         lineHeight: 1.5,
                       }}
                     >
@@ -148,132 +166,106 @@ export const SqlCandidatesPicker: React.FC<SqlCandidatesPickerProps> = ({
                   </div>
                 </div>
 
-                {/* SQL toggle + select button row */}
                 <div
                   style={{
                     display: 'flex',
                     alignItems: 'center',
-                    gap: 8,
+                    gap: 12,
                     marginTop: 8,
                     marginLeft: 32,
                   }}
                 >
+                  <label
+                    style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: 6,
+                      fontSize: 11,
+                      color: isChecked ? '#a5b4fc' : '#5a5a7a',
+                    }}
+                  >
+                    <input
+                      type="radio"
+                      name="execute_candidate"
+                      checked={isExecute}
+                      disabled={!isChecked || submitted}
+                      onChange={() => setExecuteId(candidate.id)}
+                      style={{ accentColor: '#7c6af7' }}
+                    />
+                    Execute this one
+                  </label>
                   <button
-                    onClick={() => toggleExpand(candidate.id)}
+                    onClick={() =>
+                      setExpandedId((p) => (p === candidate.id ? null : candidate.id))
+                    }
+                    disabled={submitted}
                     style={{
                       padding: '4px 10px',
                       background: 'transparent',
-                      border: `1px solid ${isGreyedOut ? '#252538' : '#3a3a5c'}`,
+                      border: '1px solid #3a3a5c',
                       borderRadius: 5,
-                      color: isGreyedOut ? '#4a4a6a' : '#8a8aac',
+                      color: '#8a8aac',
                       fontSize: 11,
                       cursor: 'pointer',
                       fontFamily: 'ui-monospace, Consolas, monospace',
-                      transition: 'all 0.15s',
-                    }}
-                    onMouseEnter={(e) => {
-                      if (!isGreyedOut) {
-                        ;(e.currentTarget as HTMLElement).style.borderColor = '#7c6af7'
-                        ;(e.currentTarget as HTMLElement).style.color = '#a5b4fc'
-                      }
-                    }}
-                    onMouseLeave={(e) => {
-                      if (!isGreyedOut) {
-                        ;(e.currentTarget as HTMLElement).style.borderColor = '#3a3a5c'
-                        ;(e.currentTarget as HTMLElement).style.color = '#8a8aac'
-                      }
                     }}
                   >
                     {isExpanded ? 'Hide SQL \u25B4' : 'Show SQL \u25BE'}
                   </button>
-
-                  {!selected && (
-                    <button
-                      onClick={() => onSelect(candidate)}
-                      style={{
-                        padding: '5px 14px',
-                        background: '#7c6af7',
-                        border: 'none',
-                        borderRadius: 5,
-                        color: '#fff',
-                        fontSize: 12,
-                        fontWeight: 600,
-                        cursor: 'pointer',
-                        transition: 'background 0.15s',
-                      }}
-                      onMouseEnter={(e) => {
-                        ;(e.currentTarget as HTMLElement).style.background = '#6b5ce6'
-                      }}
-                      onMouseLeave={(e) => {
-                        ;(e.currentTarget as HTMLElement).style.background = '#7c6af7'
-                      }}
-                    >
-                      Select This
-                    </button>
-                  )}
-
-                  {isSelected && (
-                    <span
-                      style={{
-                        fontSize: 11,
-                        fontWeight: 600,
-                        color: '#4ade80',
-                        display: 'flex',
-                        alignItems: 'center',
-                        gap: 4,
-                      }}
-                    >
-                      <span
-                        style={{
-                          width: 14,
-                          height: 14,
-                          borderRadius: '50%',
-                          background: 'rgba(74,222,128,0.2)',
-                          border: '1px solid rgba(74,222,128,0.4)',
-                          display: 'inline-flex',
-                          alignItems: 'center',
-                          justifyContent: 'center',
-                          fontSize: 9,
-                        }}
-                      >
-                        {'\u2713'}
-                      </span>
-                      Selected
-                    </span>
-                  )}
                 </div>
               </div>
 
-              {/* Expandable SQL preview */}
               {isExpanded && (
-                <div
+                <pre
                   style={{
-                    borderTop: `1px solid ${isGreyedOut ? '#252538' : '#3a3a5c'}`,
+                    margin: 0,
+                    padding: '12px 14px',
+                    fontFamily: 'ui-monospace, Consolas, monospace',
+                    fontSize: 11,
+                    color: '#a5b4fc',
+                    overflowX: 'auto',
+                    whiteSpace: 'pre-wrap',
+                    wordBreak: 'break-all',
+                    maxHeight: 200,
+                    overflowY: 'auto',
+                    borderTop: '1px solid #3a3a5c',
                     background: '#1a1a2e',
+                    lineHeight: 1.6,
                   }}
                 >
-                  <pre
-                    style={{
-                      margin: 0,
-                      padding: '12px 14px',
-                      fontFamily: 'ui-monospace, Consolas, monospace',
-                      fontSize: 11,
-                      color: isGreyedOut ? '#4a4a6a' : '#a5b4fc',
-                      overflowX: 'auto',
-                      whiteSpace: 'pre-wrap',
-                      wordBreak: 'break-all',
-                      maxHeight: 200,
-                      overflowY: 'auto',
-                      lineHeight: 1.6,
-                    }}
-                  >
-                    {candidate.sql}
-                  </pre>
-                </div>
+                  {candidate.sql}
+                </pre>
               )}
             </div>
           )
         })}
+
+        <div
+          style={{
+            display: 'flex',
+            justifyContent: 'flex-end',
+            gap: 10,
+            marginTop: 4,
+          }}
+        >
+          <button
+            onClick={handleAccept}
+            disabled={submitted || checkedIds.size === 0 || !executeId}
+            style={{
+              padding: '8px 16px',
+              background: submitted ? '#4ade80' : '#7c6af7',
+              border: 'none',
+              borderRadius: 6,
+              color: '#fff',
+              fontSize: 13,
+              fontWeight: 600,
+              cursor: submitted || checkedIds.size === 0 ? 'default' : 'pointer',
+              opacity: submitted || checkedIds.size === 0 ? 0.6 : 1,
+            }}
+          >
+            {submitted ? '\u2713 Saved' : `Accept Selected (${checkedIds.size}) & Run`}
+          </button>
+        </div>
       </div>
     </div>
   )

@@ -7,7 +7,12 @@ interface MessageListProps {
   onOpenInEditor?: (sql: string) => void
   onClarificationAnswer?: (messageId: string, answer: string) => void
   onExecuteSql?: (messageId: string, sql: string) => void
-  onSelectCandidate?: (messageId: string, candidate: { id: string; interpretation: string; sql: string; explanation: string }) => void
+  onAcceptCandidates?: (
+    messageId: string,
+    accepted: Array<{ id: string; interpretation: string; sql: string; explanation: string }>,
+    rejected: Array<{ id: string; interpretation: string; sql: string; explanation: string }>,
+    executedId: string,
+  ) => void
   onAcceptQuery?: (messageId: string, sql: string, accepted: boolean) => void
   isExecutingSql?: boolean
   executedSqlMessageId?: string
@@ -18,7 +23,7 @@ export const MessageList: React.FC<MessageListProps> = ({
   onOpenInEditor,
   onClarificationAnswer,
   onExecuteSql,
-  onSelectCandidate,
+  onAcceptCandidates,
   onAcceptQuery,
   isExecutingSql,
   executedSqlMessageId,
@@ -56,7 +61,7 @@ export const MessageList: React.FC<MessageListProps> = ({
           onOpenInEditor={onOpenInEditor}
           onClarificationAnswer={onClarificationAnswer}
           onExecuteSql={onExecuteSql}
-          onSelectCandidate={onSelectCandidate}
+          onAcceptCandidates={onAcceptCandidates}
           onAcceptQuery={onAcceptQuery}
           isExecutingSql={isExecutingSql}
           executedSqlMessageId={executedSqlMessageId}

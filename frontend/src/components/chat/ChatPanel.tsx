@@ -247,21 +247,52 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ onOpenInEditor }) => {
   )
 
   /**
-   * Called when the user picks a candidate from the SqlCandidatesPicker.
-   * Sends the selected SQL through validate -> optimize -> sql_ready pipeline.
+   * Called when the user clicks "Accept Selected & Run" on the SqlCandidatesPicker.
+   * Records the accepted/rejected set as a single rich session entry, then runs
+   * the chosen executable candidate through validate -> optimize -> sql_ready.
    */
-  const handleSelectCandidate = useCallback(
-    (_messageId: string, candidate: { id: string; interpretation: string; sql: string; explanation: string }) => {
-      addUserMessage(`Selected: ${candidate.interpretation}`)
+  const handleAcceptCandidates = useCallback(
+    (
+      _messageId: string,
+      accepted: Array<{ id: string; interpretation: string; sql: string; explanation: string }>,
+      rejected: Array<{ id: string; interpretation: string; sql: string; explanation: string }>,
+      executedId: string,
+    ) => {
+      const executed = accepted.find((c) => c.id === executedId) ?? accepted[0]
+      if (!executed) return
+
+      const queryContext = activeBaseQuery || lastUserInputRef.current
+      const { clarificationPairs, currentSessionDigest } = useChatStore.getState()
+
+      // Fire-and-forget: record session digest so the next similar query can short-circuit.
+      acceptGeneratedQuery(
+        queryContext,
+        accepted.map((c) => ({
+          id: c.id,
+          sql: c.sql,
+          explanation: c.explanation,
+          interpretation: c.interpretation,
+        })),
+        rejected.map((c) => ({
+          id: c.id,
+          sql: c.sql,
+          explanation: c.explanation,
+          interpretation: c.interpretation,
+        })),
+        executedId,
+        clarificationPairs,
+        currentSessionDigest as unknown as Record<string, unknown>,
+      ).catch((err) => console.warn('Failed to record accepted candidates:', err))
+
+      addUserMessage(`Selected: ${executed.interpretation}`)
       setIsStreaming(true)
       setCompletedSteps([])
 
-      const queryContext = activeBaseQuery || lastUserInputRef.current
       const historySnap = [...history]
 
       abortRef.current = executeCandidateSql(
-        candidate.sql,
-        candidate.explanation,
+        executed.sql,
+        executed.explanation,
         queryContext,
         historySnap,
         (step) => setCompletedSteps((prev) => (prev.includes(step) ? prev : [...prev, step])),
@@ -423,7 +454,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ onOpenInEditor }) => {
         onOpenInEditor={onOpenInEditor}
         onClarificationAnswer={handleClarificationAnswer}
         onExecuteSql={handleExecuteConfirmed}
-        onSelectCandidate={handleSelectCandidate}
+        onAcceptCandidates={handleAcceptCandidates}
         onAcceptQuery={handleAcceptQuery}
         isExecutingSql={isExecutingSql}
         executedSqlMessageId={executedSqlMessageId}

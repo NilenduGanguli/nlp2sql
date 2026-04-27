@@ -11,7 +11,12 @@ interface MessageBubbleProps {
   onOpenInEditor?: (sql: string) => void
   onClarificationAnswer?: (messageId: string, answer: string) => void
   onExecuteSql?: (messageId: string, sql: string) => void
-  onSelectCandidate?: (messageId: string, candidate: { id: string; interpretation: string; sql: string; explanation: string }) => void
+  onAcceptCandidates?: (
+    messageId: string,
+    accepted: Array<{ id: string; interpretation: string; sql: string; explanation: string }>,
+    rejected: Array<{ id: string; interpretation: string; sql: string; explanation: string }>,
+    executedId: string,
+  ) => void
   onAcceptQuery?: (messageId: string, sql: string, accepted: boolean) => void
   isExecutingSql?: boolean
   executedSqlMessageId?: string
@@ -22,7 +27,7 @@ export const MessageBubble: React.FC<MessageBubbleProps> = ({
   onOpenInEditor,
   onClarificationAnswer,
   onExecuteSql,
-  onSelectCandidate,
+  onAcceptCandidates,
   onAcceptQuery,
   isExecutingSql = false,
   executedSqlMessageId,
@@ -110,7 +115,10 @@ export const MessageBubble: React.FC<MessageBubbleProps> = ({
       <div style={{ marginBottom: 12 }}>
         <SqlCandidatesPicker
           candidates={message.sqlCandidates}
-          onSelect={(candidate) => onSelectCandidate?.(message.id, candidate)}
+          reusedFromSession={message.reusedFromSession}
+          onAccept={(accepted, rejected, executedId) =>
+            onAcceptCandidates?.(message.id, accepted, rejected, executedId)
+          }
         />
       </div>
     )
