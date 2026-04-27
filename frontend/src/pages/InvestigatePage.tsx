@@ -23,6 +23,7 @@ const NODE_LABELS: Record<string, string> = {
   classify_intent:     'Intent Classifier',
   extract_entities:    'Entity Extractor (Agentic)',
   retrieve_schema:     'Schema Retrieval',
+  session_lookup:      'Session Memory Lookup',
   check_clarification: 'Clarification Check',
   generate_sql:        'SQL Generator',
   validate_sql:        'SQL Validator',
@@ -397,6 +398,13 @@ function StepCard({ step, defaultOpen = false }: StepCardProps) {
   const isAgentExtractor  = step.node === 'extract_entities'
   const isSchemaRetrieval = step.node === 'retrieve_schema'
   const isKycAgent        = step.node === 'kyc_business_agent'
+  const isSessionLookup   = step.node === 'session_lookup'
+
+  const sessionAction = isSessionLookup ? (step.output_summary?.action as string | undefined) : undefined
+  const sessionEntryId = isSessionLookup ? (step.output_summary?.matched_entry_id as string | undefined) : undefined
+  const sessionCandidateCount = isSessionLookup ? (step.output_summary?.candidate_count as number | undefined) : undefined
+  const sessionReason = isSessionLookup ? (step.output_summary?.reason as string | undefined) : undefined
+  const sessionSimilarity = isSessionLookup ? (step.output_summary?.similarity as number | undefined) : undefined
 
   const iterations  = isAgentExtractor ? (step.output_summary?.iterations as number | undefined) : undefined
   const confirmedFqns: string[] = isAgentExtractor
@@ -448,6 +456,12 @@ function StepCard({ step, defaultOpen = false }: StepCardProps) {
         {isKycAgent && kycAction === 'route_to_user' && <Badge label="→ user" color={C.warn} />}
         {isKycAgent && kycAction === 'skip' && <Badge label="skipped" color={C.muted} />}
         {isKycAgent && kycSource && <Badge label={kycSource.replace('_', ' ')} color={kycAutoAnswered ? C.success : C.muted} />}
+        {isSessionLookup && sessionAction === 'match' && (
+          <Badge label={`match (${sessionCandidateCount ?? 0} candidates)`} color={C.success} />
+        )}
+        {isSessionLookup && sessionAction && sessionAction !== 'match' && (
+          <Badge label={sessionAction} color={C.muted} />
+        )}
         <div style={{ flex: 1 }} />
         {isAgentExtractor && confirmedFqns.length > 0 ? (
           <span style={{ color: C.success, fontSize: 11, maxWidth: 300, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
@@ -601,6 +615,35 @@ function StepCard({ step, defaultOpen = false }: StepCardProps) {
             </>
           ) : (
             <>
+              {/* ── SESSION LOOKUP: decision summary ─────────────────────── */}
+              {isSessionLookup && (
+                <div style={{
+                  background: sessionAction === 'match' ? C.success + '10' : C.panel2,
+                  border: `1px solid ${sessionAction === 'match' ? C.success + '44' : C.border}`,
+                  borderRadius: 6, padding: '10px 14px', fontSize: 12,
+                  color: C.text, marginBottom: 12,
+                  display: 'flex', flexDirection: 'column', gap: 6,
+                }}>
+                  <div>
+                    <strong style={{ color: sessionAction === 'match' ? C.success : C.muted, marginRight: 8 }}>
+                      {sessionAction === 'match' ? '✓ Session matched' : `${sessionAction ?? 'no match'}`}
+                    </strong>
+                    {sessionAction === 'match' && sessionEntryId && (
+                      <span style={{ color: C.muted }}>
+                        entry <code style={{ color: C.text }}>{sessionEntryId}</code>
+                        {' · '}{sessionCandidateCount ?? 0} candidate{(sessionCandidateCount ?? 0) === 1 ? '' : 's'}
+                        {sessionSimilarity != null && (
+                          <> {' · '}similarity {(sessionSimilarity * 100).toFixed(1)}%</>
+                        )}
+                      </span>
+                    )}
+                  </div>
+                  {sessionReason && (
+                    <div style={{ color: C.muted, fontSize: 11 }}>{sessionReason}</div>
+                  )}
+                </div>
+              )}
+
               {/* ── RETRIEVE SCHEMA: fast-path note ──────────────────────── */}
               {usedPreresolved && (
                 <div style={{
