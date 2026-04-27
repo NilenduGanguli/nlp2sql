@@ -43,6 +43,8 @@ PRUNE_TRIGGER = 400
 PRUNE_KEEP = 350
 PRUNE_RECENCY_DAYS = 90
 
+SESSION_MATCH_THRESHOLD = 0.65
+
 
 # ---------------------------------------------------------------------------
 # Data classes
@@ -191,6 +193,54 @@ class KYCKnowledgeStore:
             self.static_entries.append(entry)
             self.save_to_disk()
         return entry
+
+    def add_session_entry(self, entry: KnowledgeEntry) -> KnowledgeEntry:
+        """Persist a query_session entry. Stored alongside manual entries."""
+        with self._lock:
+            existing_ids: Set[str] = {e.id for e in self.static_entries}
+            if entry.id not in existing_ids:
+                self.static_entries.append(entry)
+            self.save_to_disk()
+        return entry
+
+    def find_session_match(self, enriched_query: str, graph) -> Optional[KnowledgeEntry]:
+        """Find a prior query_session whose original/enriched query matches the
+        current input above SESSION_MATCH_THRESHOLD AND whose referenced tables
+        all still exist in `graph`.
+
+        Tiebreak: higher Jaccard score wins; on equal score, newer created_at.
+        """
+        if not enriched_query or not enriched_query.strip():
+            return None
+
+        query_tokens = _tokenize(enriched_query)
+        if not query_tokens:
+            return None
+
+        with self._lock:
+            best: Optional[KnowledgeEntry] = None
+            best_score = -1.0
+            best_created = -1.0
+            for e in self.static_entries:
+                if e.source != "query_session" or e.category != "query_session":
+                    continue
+                meta = e.metadata or {}
+                hay = (meta.get("original_query", "") + " " + meta.get("enriched_query", "")).strip()
+                if not hay:
+                    continue
+                score = _jaccard(query_tokens, _tokenize(hay))
+                if score < SESSION_MATCH_THRESHOLD:
+                    continue
+                # Verify all referenced tables still exist.
+                tables = meta.get("tables_used", []) or []
+                if tables and not all(graph.get_node("Table", t) for t in tables):
+                    continue
+                created = float(meta.get("created_at", 0.0) or 0.0)
+                if (score > best_score) or (score == best_score and created > best_created):
+                    best = e
+                    best_score = score
+                    best_created = created
+            return best
 
     def update_entry(self, entry_id: str, content: str, category: str, metadata: Optional[Dict] = None) -> bool:
         with self._lock:
