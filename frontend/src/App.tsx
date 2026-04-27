@@ -1,4 +1,4 @@
-import React, { useState } from 'react'
+import React, { useState, useEffect } from 'react'
 import { AppShell } from './components/layout/AppShell'
 import type { TabId } from './components/layout/AppShell'
 import { ChatPage } from './pages/ChatPage'
@@ -33,6 +33,22 @@ export default function App() {
     restoreSession(session.messages, session.history)
     setActiveTab('chat')
   }
+
+  useEffect(() => {
+    const handler = (e: Event) => {
+      const detail = (e as CustomEvent).detail as { query?: string } | undefined
+      if (!detail?.query) return
+      setActiveTab('chat')
+      // Defer prefill until the chat tab is mounted-visible.
+      setTimeout(() => {
+        window.dispatchEvent(
+          new CustomEvent('chat-prefill-input', { detail: { query: detail.query } }),
+        )
+      }, 0)
+    }
+    window.addEventListener('rerun-query-from-session', handler)
+    return () => window.removeEventListener('rerun-query-from-session', handler)
+  }, [])
 
   return (
     <AppShell activeTab={activeTab} onTabChange={setActiveTab} onTableSelect={handleTableSelect}>

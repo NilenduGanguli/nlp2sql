@@ -1,4 +1,4 @@
-import React, { useState, useRef, useCallback } from 'react'
+import React, { useState, useRef, useCallback, useEffect } from 'react'
 import { useChatStore } from '../../store/chatStore'
 import { useChatHistoryStore } from '../../store/chatHistoryStore'
 import { useTraceStore } from '../../store/traceStore'
@@ -157,6 +157,17 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ onOpenInEditor }) => {
     setInput(q)
     textareaRef.current?.focus()
   }
+
+  useEffect(() => {
+    const handler = (e: Event) => {
+      const detail = (e as CustomEvent).detail as { query?: string } | undefined
+      if (!detail?.query) return
+      setInput(detail.query)
+      textareaRef.current?.focus()
+    }
+    window.addEventListener('chat-prefill-input', handler)
+    return () => window.removeEventListener('chat-prefill-input', handler)
+  }, [])
 
   const handleStop = () => {
     abortRef.current?.abort()

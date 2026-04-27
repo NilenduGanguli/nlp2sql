@@ -175,6 +175,7 @@ export const KYCAgentPage: React.FC = () => {
   const [leftTab, setLeftTab] = useState<LeftTab>('knowledge')
   const [search, setSearch] = useState('')
   const [filterCategory, setFilterCategory] = useState('')
+  const [filterSource, setFilterSource] = useState('')
 
   // ── Data ─────────────────────────────────────────────────────────────────
   const [entries, setEntries] = useState<KnowledgeEntry[]>([])
@@ -222,6 +223,7 @@ export const KYCAgentPage: React.FC = () => {
     try {
       const res = await fetchKnowledge({
         category: filterCategory || undefined,
+        source: filterSource || undefined,
         search: search || undefined,
       })
       setEntries(res.entries ?? [])
@@ -231,7 +233,7 @@ export const KYCAgentPage: React.FC = () => {
       setEntriesTotal(0)
     }
     setEntriesLoading(false)
-  }, [filterCategory, search])
+  }, [filterCategory, filterSource, search])
 
   const loadPatterns = useCallback(async () => {
     setPatternsLoading(true)
@@ -422,6 +424,7 @@ export const KYCAgentPage: React.FC = () => {
           clearSelection()
           setSearch('')
           setFilterCategory('')
+          setFilterSource('')
         }}
         style={{
           flex: 1,
@@ -456,6 +459,11 @@ export const KYCAgentPage: React.FC = () => {
     }
     return entries.map((e) => {
       const isSelected = selectedEntry?.id === e.id
+      const isSession = e.source === 'query_session'
+      const meta = e.metadata as Record<string, unknown> | undefined
+      const originalQuery = meta && typeof meta.original_query === 'string'
+        ? (meta.original_query as string)
+        : ''
       return (
         <div
           key={e.id}
@@ -470,10 +478,12 @@ export const KYCAgentPage: React.FC = () => {
           }}
         >
           <div style={{ fontSize: 13, color: C.text, lineHeight: '18px', marginBottom: 4 }}>
-            {truncate(e.content, 80)}
+            {truncate(isSession && originalQuery ? originalQuery : e.content, 80)}
           </div>
-          <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
-            <span style={badge(C.accent)}>{e.category}</span>
+          <div style={{ display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
+            <span style={badge(isSession ? C.success : C.accent)}>
+              {isSession ? '\u267B session' : e.category}
+            </span>
             <span style={{ fontSize: 11, color: C.muted }}>{e.source}</span>
           </div>
         </div>
@@ -652,6 +662,245 @@ export const KYCAgentPage: React.FC = () => {
                 <span style={{ fontWeight: 600 }}>{count}</span>
               </div>
             ))}
+          </div>
+        )}
+      </div>
+    )
+  }
+
+  // ── Right panel: query_session entry (read-only, rich) ──
+
+  const renderSessionEntry = () => {
+    if (!selectedEntry) return null
+    const meta = (selectedEntry.metadata ?? {}) as Record<string, unknown>
+    const originalQuery = typeof meta.original_query === 'string' ? (meta.original_query as string) : ''
+    const enrichedQuery = typeof meta.enriched_query === 'string' ? (meta.enriched_query as string) : ''
+    const tablesUsed = Array.isArray(meta.tables_used) ? (meta.tables_used as string[]) : []
+    const accepted = Array.isArray(meta.accepted_candidates)
+      ? (meta.accepted_candidates as Array<Record<string, unknown>>)
+      : []
+    const rejected = Array.isArray(meta.rejected_candidates)
+      ? (meta.rejected_candidates as Array<Record<string, unknown>>)
+      : []
+    const clarifications = Array.isArray(meta.clarifications)
+      ? (meta.clarifications as Array<Record<string, unknown>>)
+      : []
+    const createdAt = typeof meta.created_at === 'number' ? (meta.created_at as number) : 0
+
+    const handleRerun = () => {
+      if (!originalQuery) return
+      window.dispatchEvent(
+        new CustomEvent('rerun-query-from-session', { detail: { query: originalQuery } }),
+      )
+    }
+
+    const sectionLabel: React.CSSProperties = {
+      fontSize: 11,
+      fontWeight: 600,
+      color: C.muted,
+      textTransform: 'uppercase',
+      letterSpacing: '0.5px',
+      marginBottom: 6,
+    }
+    const sectionCard: React.CSSProperties = {
+      background: C.bg,
+      padding: '10px 12px',
+      borderRadius: 6,
+      border: `1px solid ${C.border}`,
+      lineHeight: '1.5',
+    }
+
+    return (
+      <div
+        style={{
+          padding: 24,
+          display: 'flex',
+          flexDirection: 'column',
+          gap: 14,
+          height: '100%',
+          overflowY: 'auto',
+        }}
+      >
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+          <h3 style={{ margin: 0, fontSize: 16, color: C.text }}>
+            <span style={{ marginRight: 8 }}>{'\u267B'}</span>Learned Query Session
+          </h3>
+          <div style={{ display: 'flex', gap: 8 }}>
+            {originalQuery && (
+              <button
+                onClick={handleRerun}
+                style={{
+                  padding: '7px 14px',
+                  background: C.accent,
+                  border: 'none',
+                  borderRadius: 6,
+                  color: '#fff',
+                  fontSize: 12,
+                  fontWeight: 600,
+                  cursor: 'pointer',
+                }}
+              >
+                {'\u21BB Re-run in Chat'}
+              </button>
+            )}
+            <button onClick={clearSelection} style={btnGhost}>
+              Close
+            </button>
+          </div>
+        </div>
+
+        <div style={{ display: 'flex', gap: 12, fontSize: 11, color: C.muted, flexWrap: 'wrap' }}>
+          <span>ID: {selectedEntry.id}</span>
+          <span>Source: {selectedEntry.source}</span>
+          {createdAt > 0 && <span>Saved: {formatTs(createdAt)}</span>}
+        </div>
+
+        {originalQuery && (
+          <div>
+            <div style={sectionLabel}>Original Query</div>
+            <div style={sectionCard}>{originalQuery}</div>
+          </div>
+        )}
+
+        {enrichedQuery && enrichedQuery !== originalQuery && (
+          <div>
+            <div style={sectionLabel}>Enriched Query</div>
+            <div style={{ ...sectionCard, fontStyle: 'italic', color: C.muted }}>
+              {enrichedQuery}
+            </div>
+          </div>
+        )}
+
+        {tablesUsed.length > 0 && (
+          <div>
+            <div style={sectionLabel}>Tables Used</div>
+            <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+              {tablesUsed.map((t) => (
+                <span key={t} style={badge(C.accent)}>{t}</span>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {clarifications.length > 0 && (
+          <div>
+            <div style={sectionLabel}>Clarifications</div>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+              {clarifications.map((q, i) => (
+                <div key={i} style={sectionCard}>
+                  <div style={{ fontSize: 12, fontWeight: 600, color: C.text, marginBottom: 4 }}>
+                    Q: {String(q.question ?? '')}
+                  </div>
+                  <div style={{ fontSize: 12, color: C.muted }}>
+                    A: {String(q.answer ?? '')}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {accepted.length > 0 && (
+          <div>
+            <div style={sectionLabel}>
+              Accepted Candidates ({accepted.length})
+            </div>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+              {accepted.map((c, i) => (
+                <details
+                  key={i}
+                  style={{
+                    background: C.bg,
+                    padding: '8px 12px',
+                    borderRadius: 6,
+                    border: `1px solid ${C.success}55`,
+                  }}
+                >
+                  <summary
+                    style={{
+                      cursor: 'pointer',
+                      fontSize: 13,
+                      color: C.text,
+                      fontWeight: 600,
+                    }}
+                  >
+                    {String(c.interpretation ?? `Candidate ${i + 1}`)}
+                  </summary>
+                  {typeof c.explanation === 'string' && c.explanation && (
+                    <div style={{ fontSize: 12, color: C.muted, marginTop: 6, fontStyle: 'italic' }}>
+                      {c.explanation as string}
+                    </div>
+                  )}
+                  <pre
+                    style={{
+                      margin: '8px 0 0',
+                      padding: '8px 10px',
+                      background: C.code,
+                      borderRadius: 4,
+                      fontSize: 11,
+                      fontFamily: 'monospace',
+                      color: '#a5b4fc',
+                      whiteSpace: 'pre-wrap',
+                      overflowX: 'auto',
+                    }}
+                  >
+                    {String(c.sql ?? '')}
+                  </pre>
+                </details>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {rejected.length > 0 && (
+          <div>
+            <div style={sectionLabel}>
+              Rejected Candidates ({rejected.length})
+            </div>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+              {rejected.map((c, i) => (
+                <details
+                  key={i}
+                  style={{
+                    background: C.bg,
+                    padding: '8px 12px',
+                    borderRadius: 6,
+                    border: `1px solid ${C.error}55`,
+                  }}
+                >
+                  <summary
+                    style={{
+                      cursor: 'pointer',
+                      fontSize: 13,
+                      color: C.text,
+                      fontWeight: 600,
+                    }}
+                  >
+                    {String(c.interpretation ?? `Candidate ${i + 1}`)}
+                  </summary>
+                  {typeof c.rejection_reason === 'string' && c.rejection_reason && (
+                    <div style={{ fontSize: 12, color: C.error, marginTop: 6 }}>
+                      Reason: {c.rejection_reason as string}
+                    </div>
+                  )}
+                  <pre
+                    style={{
+                      margin: '8px 0 0',
+                      padding: '8px 10px',
+                      background: C.code,
+                      borderRadius: 4,
+                      fontSize: 11,
+                      fontFamily: 'monospace',
+                      color: '#a5b4fc',
+                      whiteSpace: 'pre-wrap',
+                      overflowX: 'auto',
+                    }}
+                  >
+                    {String(c.sql ?? '')}
+                  </pre>
+                </details>
+              ))}
+            </div>
           </div>
         )}
       </div>
@@ -1046,7 +1295,9 @@ export const KYCAgentPage: React.FC = () => {
   // Main render
   // ══════════════════════════════════════════════════════════════════════════
 
-  const showEditor = isCreating || selectedEntry !== null
+  const showSessionEntry =
+    !isCreating && selectedEntry !== null && selectedEntry.source === 'query_session'
+  const showEditor = isCreating || (selectedEntry !== null && !showSessionEntry)
   const showPatternDetail = selectedPattern !== null
 
   return (
@@ -1115,6 +1366,19 @@ export const KYCAgentPage: React.FC = () => {
                 </option>
               ))}
             </select>
+            {leftTab === 'knowledge' && (
+              <select
+                value={filterSource}
+                onChange={(e) => setFilterSource(e.target.value)}
+                style={{ ...inputStyle, cursor: 'pointer' }}
+              >
+                <option value="">All sources</option>
+                <option value="query_session">Query sessions</option>
+                <option value="user">User</option>
+                <option value="auto_learned">Auto-learned</option>
+                <option value="default">Default</option>
+              </select>
+            )}
             {leftTab === 'patterns' && (
               <select
                 value={patternSort}
@@ -1196,11 +1460,13 @@ export const KYCAgentPage: React.FC = () => {
           background: C.panel,
         }}
       >
-        {showEditor
-          ? renderEntryEditor()
-          : showPatternDetail
-            ? renderPatternDetail()
-            : renderAgentTester()}
+        {showSessionEntry
+          ? renderSessionEntry()
+          : showEditor
+            ? renderEntryEditor()
+            : showPatternDetail
+              ? renderPatternDetail()
+              : renderAgentTester()}
       </div>
     </div>
   )
