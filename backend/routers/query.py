@@ -44,6 +44,7 @@ _NODE_TO_STEP: Dict[str, str] = {
     "optimize_sql":        "optimizing",
     "present_sql":         "presenting",
     "kyc_business_agent":  "auto_clarifying",
+    "session_lookup":      "checking_session_memory",
     "execute_query":       "executing",
     "format_result":       "formatting",
 }

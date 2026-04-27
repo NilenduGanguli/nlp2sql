@@ -193,6 +193,13 @@ def build_pipeline(graph, config, llm=None):
         from agent.nodes.kyc_business_agent import make_kyc_business_agent
         kyc_agent_node = make_kyc_business_agent(llm=llm, knowledge_store=_knowledge_store)
 
+    # Session lookup: short-circuits clarification when a prior query_session entry matches
+    session_lookup_node = None
+    if _knowledge_store is not None:
+        from agent.nodes.session_lookup import make_session_lookup
+        if str(getattr(config, "session_learning_enabled", True)).lower() != "false":
+            session_lookup_node = make_session_lookup(_knowledge_store, graph)
+
     if not _LANGGRAPH_AVAILABLE:
         # ------------------------------------------------------------------ #
         # Fallback: simple sequential pipeline without LangGraph
@@ -243,6 +250,12 @@ def build_pipeline(graph, config, llm=None):
             ("format_result",       format_node),
         ]
 
+        if session_lookup_node:
+            pipeline_nodes.insert(
+                next(i for i, (n, _) in enumerate(pipeline_nodes) if n == "check_clarification"),
+                ("session_lookup", session_lookup_node),
+            )
+
         logger.info("Sequential fallback pipeline ready (llm=%s)", "yes" if llm else "no")
         return _SequentialPipeline(pipeline_nodes)
 
@@ -260,6 +273,8 @@ def build_pipeline(graph, config, llm=None):
     workflow.add_node("check_clarification", clarify_node)
     if kyc_agent_node:
         workflow.add_node("kyc_business_agent", kyc_agent_node)
+    if session_lookup_node:
+        workflow.add_node("session_lookup", session_lookup_node)
     workflow.add_node("generate_sql",        gen_node)
     workflow.add_node("validate_sql",        valid_node)
     workflow.add_node("optimize_sql",        opt_node)
@@ -271,7 +286,15 @@ def build_pipeline(graph, config, llm=None):
     workflow.add_edge("enrich_query",     "classify_intent")
     workflow.add_edge("classify_intent",  "extract_entities")
     workflow.add_edge("extract_entities", "retrieve_schema")
-    workflow.add_edge("retrieve_schema",  "check_clarification")
+    if session_lookup_node:
+        workflow.add_edge("retrieve_schema", "session_lookup")
+        workflow.add_conditional_edges(
+            "session_lookup",
+            lambda s: "skip_to_present" if s.get("has_candidates") else "clarify",
+            {"skip_to_present": "present_sql", "clarify": "check_clarification"},
+        )
+    else:
+        workflow.add_edge("retrieve_schema", "check_clarification")
 
     # After clarification check:
     # - needs_clarification=true AND kyc_agent available → try kyc_business_agent
