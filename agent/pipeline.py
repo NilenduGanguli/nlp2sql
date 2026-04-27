@@ -395,6 +395,7 @@ def run_query(
         "kyc_auto_answer": "",
         "sql_candidates": [],
         "has_candidates": False,
+        "session_match_entry_id": None,
         "skip_execution": True,
         "previous_sql_context": {},
         "_trace": [],

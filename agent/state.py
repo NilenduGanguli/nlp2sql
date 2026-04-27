@@ -149,6 +149,10 @@ class AgentState(TypedDict):
     has_candidates: bool
     """True when generate_sql produced multiple candidates instead of one."""
 
+    # ----------------------------------------------- Session Match (NEW)
+    session_match_entry_id: Optional[str]
+    """ID of the saved query_session entry that triggered short-circuit (None when no match)."""
+
     # -------------------------------------------------- Optional Execution
     skip_execution: bool
     """When True, pipeline presents SQL for user review instead of auto-executing."""
