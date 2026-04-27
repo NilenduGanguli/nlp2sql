@@ -6,6 +6,7 @@ SSE event sequence per request:
   event: sql             data: {"sql": "<generated SQL>"}      (emitted as soon as SQL is ready)
   event: kyc_auto_answer data: {"question": "...", "auto_answer": "...", "source": "..."}
   event: sql_candidates  data: {"candidates": [...]}
+  event: session_match   data: {"matched_entry_id": "...", "candidates": [...], "original_query": "..."}
   event: sql_ready       data: {"sql": "...", "explanation": "...", ...}  (confirm-before-execute)
   event: result          data: {<full result dict>}
   event: clarification   data: {"question": "...", "options": [...], "context": "..."}
@@ -18,7 +19,7 @@ import json
 import logging
 import threading
 import time
-from typing import Any, Dict
+from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Depends
 from sse_starlette.sse import EventSourceResponse
@@ -163,6 +164,22 @@ async def stream_query(
                                     queue.put_nowait,
                                     ("sql_candidates", {"candidates": state["sql_candidates"]}),
                                 )
+
+                        # Emit session_match when session_lookup short-circuits
+                        if node_name == "session_lookup" and state.get("session_match_entry_id"):
+                            loop.call_soon_threadsafe(
+                                queue.put_nowait,
+                                ("session_match", {
+                                    "matched_entry_id": state["session_match_entry_id"],
+                                    "candidates": state.get("sql_candidates", []),
+                                    "original_query": req.user_input,
+                                }),
+                            )
+                            # Also emit candidates so existing UI flow renders the picker
+                            loop.call_soon_threadsafe(
+                                queue.put_nowait,
+                                ("sql_candidates", {"candidates": state.get("sql_candidates", [])}),
+                            )
 
                         # Emit KYC auto-answer when business agent resolved a clarification
                         if node_name == "kyc_business_agent" and state.get("kyc_auto_answered"):
@@ -502,12 +519,29 @@ class _ClarificationPair(_BaseModel):
     question: str
     answer: str
 
-class _AcceptQueryRequest(_BaseModel):
+class _AcceptedCandidate(_BaseModel):
+    id: str = ""
     sql: str
+    explanation: str = ""
+    interpretation: str = ""
+
+class _RejectedCandidate(_BaseModel):
+    id: str = ""
+    sql: str = ""
+    explanation: str = ""
+    interpretation: str = ""
+    rejection_reason: str = ""
+
+class _AcceptQueryRequest(_BaseModel):
+    sql: str = ""                         # legacy single-SQL field (back-compat)
     explanation: str = ""
     user_input: str = ""
     clarification_pairs: _List[_ClarificationPair] = []
     accepted: bool = True
+    accepted_candidates: _List[_AcceptedCandidate] = []
+    rejected_candidates: _List[_RejectedCandidate] = []
+    executed_candidate_id: Optional[str] = None
+    session_digest: Dict[str, Any] = {}
 
 @router.post("/query/accept-query")
 async def accept_query(
@@ -528,6 +562,13 @@ async def accept_query(
 
     if not req.accepted:
         return {"status": "rejected"}
+
+    # Normalize: if no accepted_candidates supplied (legacy clients), synthesize one from req.sql
+    accepted_list = list(req.accepted_candidates)
+    if not accepted_list and req.sql:
+        accepted_list = [_AcceptedCandidate(
+            id="legacy", sql=req.sql, explanation=req.explanation, interpretation="primary",
+        )]
 
     recorded_ids: _List[str] = []
     try:
@@ -564,34 +605,56 @@ async def accept_query(
         logger.warning("Failed to record accepted query: %s", exc)
         return {"status": "partial", "recorded": recorded_ids}
 
-    # 3. Background: LLM-analyze the interaction for rich knowledge entries
-    if llm is not None and req.user_input and req.sql:
+    # 3. Background: comprehensive session learning + narrow per-clarification fallback
+    if llm is not None and req.user_input and accepted_list:
         import anyio
 
         _llm = llm
         _store = knowledge_store
         _user_input = req.user_input
-        _sql = req.sql
-        _explanation = req.explanation
+        _digest = req.session_digest or {}
+        _accepted_payload = [a.model_dump() for a in accepted_list]
+        _rejected_payload = [r.model_dump() for r in req.rejected_candidates]
+        _executed_id = req.executed_candidate_id
         _pairs = [(p.question, p.answer) for p in req.clarification_pairs]
+        _legacy_sql = req.sql or (accepted_list[0].sql if accepted_list else "")
+        _legacy_expl = req.explanation
 
         async def _analyze_bg():
+            # 3a. Comprehensive session learning (one rich entry).
             try:
-                from agent.llm_knowledge_analyzer import analyze_accepted_query
-                entries = await anyio.to_thread.run_sync(
-                    lambda: analyze_accepted_query(
-                        _llm, _user_input, _sql, _explanation, _pairs,
+                from agent.session_digest import build_session_digest
+                from agent.llm_knowledge_analyzer import analyze_accepted_session
+                if not _digest:
+                    digest = build_session_digest(
+                        {"user_input": _user_input,
+                         "clarifications_resolved": [{"question": q, "answer": a} for q, a in _pairs]},
+                        _accepted_payload, _rejected_payload, executed_id=_executed_id,
                     )
+                else:
+                    digest = _digest
+                entry = await anyio.to_thread.run_sync(
+                    lambda: analyze_accepted_session(_llm, digest)
                 )
-                for e in entries:
-                    _store.add_manual_entry(e.content, e.category, e.metadata)
-                if entries:
-                    logger.info(
-                        "LLM query analysis added %d knowledge entries for: %s",
-                        len(entries), _user_input[:60],
-                    )
+                if entry is not None:
+                    _store.add_session_entry(entry)
+                    logger.info("Session learning recorded entry %s", entry.id)
+                else:
+                    raise ValueError("session analyzer returned None")
             except Exception as exc:
-                logger.warning("LLM query analysis failed: %s", exc)
+                logger.warning("Session analyzer failed (%s); falling back to narrow analyzer", exc)
+                # 3b. Fallback: legacy narrow analyzer (1-3 entries).
+                try:
+                    from agent.llm_knowledge_analyzer import analyze_accepted_query
+                    entries = await anyio.to_thread.run_sync(
+                        lambda: analyze_accepted_query(
+                            _llm, _user_input, _legacy_sql, _legacy_expl, _pairs,
+                        )
+                    )
+                    for e in entries:
+                        _store.add_manual_entry(e.content, e.category, e.metadata)
+                except Exception as exc2:
+                    logger.warning("Narrow analyzer also failed: %s", exc2)
 
         asyncio.create_task(_analyze_bg())
 
