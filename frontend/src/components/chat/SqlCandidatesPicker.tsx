@@ -1,4 +1,5 @@
 import React, { useState } from 'react'
+import { useUserMode } from '../../hooks/useUserMode'
 
 interface SqlCandidate {
   id: string
@@ -23,12 +24,18 @@ export const SqlCandidatesPicker: React.FC<SqlCandidatesPickerProps> = ({
   onAccept,
   reusedFromSession,
 }) => {
+  const { mode } = useUserMode()
+  const [showAll, setShowAll] = useState(false)
   const [expandedId, setExpandedId] = useState<string | null>(null)
   const [checkedIds, setCheckedIds] = useState<Set<string>>(
     new Set(candidates[0] ? [candidates[0].id] : []),
   )
   const [executeId, setExecuteId] = useState<string>(candidates[0]?.id ?? '')
   const [submitted, setSubmitted] = useState(false)
+
+  const visible =
+    mode === 'consumer' && !showAll ? candidates.slice(0, 1) : candidates
+  const hiddenCount = candidates.length - visible.length
 
   const toggleChecked = (id: string) => {
     setCheckedIds((prev) => {
@@ -98,7 +105,7 @@ export const SqlCandidatesPicker: React.FC<SqlCandidatesPickerProps> = ({
           gap: 8,
         }}
       >
-        {candidates.map((candidate, index) => {
+        {visible.map((candidate, index) => {
           const isChecked = checkedIds.has(candidate.id)
           const isExecute = executeId === candidate.id
           const isExpanded = expandedId === candidate.id
@@ -239,6 +246,25 @@ export const SqlCandidatesPicker: React.FC<SqlCandidatesPickerProps> = ({
             </div>
           )
         })}
+
+        {hiddenCount > 0 && (
+          <button
+            onClick={() => setShowAll(true)}
+            style={{
+              fontSize: 12,
+              color: '#7c6af7',
+              background: 'transparent',
+              border: '1px solid #7c6af7',
+              borderRadius: 6,
+              padding: '4px 10px',
+              cursor: 'pointer',
+              marginTop: 8,
+              alignSelf: 'flex-start',
+            }}
+          >
+            Show {hiddenCount} alternative{hiddenCount > 1 ? 's' : ''}
+          </button>
+        )}
 
         <div
           style={{

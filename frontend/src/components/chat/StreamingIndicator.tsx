@@ -1,5 +1,6 @@
 import React from 'react'
 import type { QueryStep } from '../../types'
+import { useUserMode } from '../../hooks/useUserMode'
 
 const STEP_ORDER: QueryStep[] = [
   'enriching',
@@ -37,6 +38,7 @@ interface StreamingIndicatorProps {
 }
 
 export const StreamingIndicator: React.FC<StreamingIndicatorProps> = ({ steps, isStreaming }) => {
+  const { mode } = useUserMode()
   const lastStep = steps[steps.length - 1]
   const progress = lastStep
     ? ((STEP_ORDER.indexOf(lastStep) + 1) / STEP_ORDER.length) * 100
@@ -95,7 +97,7 @@ export const StreamingIndicator: React.FC<StreamingIndicatorProps> = ({ steps, i
       </div>
 
       {/* Completed steps */}
-      {steps.length > 0 && (
+      {mode === 'curator' && steps.length > 0 && (
         <div
           style={{
             display: 'flex',

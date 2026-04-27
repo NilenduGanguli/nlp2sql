@@ -1,6 +1,7 @@
-import React, { useState } from 'react'
+import React, { useState, useEffect } from 'react'
 import { Sidebar } from './Sidebar'
 import { ModeToggle } from './ModeToggle'
+import { useUserMode } from '../../hooks/useUserMode'
 
 export type TabId = 'chat' | 'editor' | 'schema' | 'graph' | 'relationships' | 'history' | 'investigate' | 'prompt_studio' | 'kyc_agent'
 
@@ -31,6 +32,19 @@ export const AppShell: React.FC<AppShellProps> = ({
   children,
 }) => {
   const [sidebarOpen, setSidebarOpen] = useState(true)
+  const { mode } = useUserMode()
+
+  const visibleTabs = (Object.keys(TAB_LABELS) as TabId[]).filter(
+    (tab) => !(mode === 'consumer' && tab === 'investigate'),
+  )
+
+  // If the user switches to consumer mode while on the Investigate tab,
+  // fall back to the chat tab so they don't get stuck on a hidden surface.
+  useEffect(() => {
+    if (mode === 'consumer' && activeTab === 'investigate') {
+      onTabChange('chat')
+    }
+  }, [mode, activeTab, onTabChange])
 
   const handleTableSelect = (fqn: string) => {
     if (onTableSelect) {
@@ -73,7 +87,7 @@ export const AppShell: React.FC<AppShellProps> = ({
             height: 44,
           }}
         >
-          {(Object.keys(TAB_LABELS) as TabId[]).map((tab) => {
+          {visibleTabs.map((tab) => {
             const isActive = activeTab === tab
             return (
               <button
