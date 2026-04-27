@@ -11,7 +11,7 @@ import { PromptStudioPage } from './pages/PromptStudioPage'
 import { KYCAgentPage } from './pages/KYCAgentPage'
 import { SchemaTab } from './components/schema/SchemaTab'
 import { useChatStore } from './store/chatStore'
-import { useUserMode } from './hooks/useUserMode'
+import { useUserMode, USER_MODE_STORAGE_KEY } from './hooks/useUserMode'
 import type { ChatSession } from './types'
 
 export default function App() {
@@ -36,17 +36,18 @@ export default function App() {
   }
 
   useEffect(() => {
-    // Only sync if user has never set the mode (no localStorage entry)
-    if (!localStorage.getItem('nlp2sql.userMode')) {
-      fetch('/api/admin/config')
-        .then((r) => r.json())
-        .then((cfg) => {
-          if (cfg.default_user_mode === 'consumer' || cfg.default_user_mode === 'curator') {
-            useUserMode.getState().setMode(cfg.default_user_mode)
-          }
-        })
-        .catch(() => {}) // Silently ignore — defaults to 'curator' from hook
-    }
+    // Sync initial mode from server default only when the user has never picked one.
+    // zustand-persist stores its envelope at this key synchronously on store init,
+    // so by the time this effect fires the key is absent iff the user has no prior choice.
+    if (localStorage.getItem(USER_MODE_STORAGE_KEY) !== null) return
+    fetch('/api/admin/config')
+      .then((r) => r.json())
+      .then((cfg) => {
+        if (cfg.default_user_mode === 'consumer' || cfg.default_user_mode === 'curator') {
+          useUserMode.getState().setMode(cfg.default_user_mode)
+        }
+      })
+      .catch(() => {})
   }, [])
 
   useEffect(() => {
