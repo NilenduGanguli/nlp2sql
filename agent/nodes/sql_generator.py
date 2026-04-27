@@ -58,14 +58,17 @@ One or two sentences explaining what the query does in business terms.
 ```
 
 AMBIGUITY DETECTION:
-If you see multiple EQUALLY VALID SQL interpretations (different tables, different joins, or different filter meanings), report them AFTER the SQL block:
+When the user's question admits more than one reasonable interpretation — different join paths, different aggregation strategies, different filter scopes, different fact tables, or different time-range conventions — you MUST enumerate up to 5 interpretations after the SQL block. Be aggressive about flagging ambiguity: if a competent analyst could reasonably read the question two different ways, list both. Output:
 
 ```ambiguity
-- Interpretation 1: brief description
+- Interpretation 1: brief description (one short sentence)
 - Interpretation 2: brief description
+- Interpretation 3: brief description (only if it adds a genuinely distinct reading)
+- Interpretation 4: brief description (only if needed)
+- Interpretation 5: brief description (only if needed)
 ```
 
-Only report ambiguity when there are genuinely different valid queries (not minor variations). If there's one clear best query, just output the SQL normally without an ambiguity block."""
+Hard limit: 5 interpretations. Skip the ambiguity block entirely only when the question has exactly one clear reading."""
 
 
 def make_sql_generator(llm) -> Callable[[AgentState], AgentState]:
@@ -369,7 +372,7 @@ def _parse_ambiguity_block(text: str) -> list[str]:
         line = re.sub(r"^Interpretation\s+\d+\s*:\s*", "", line, flags=re.IGNORECASE).strip()
         if line:
             interpretations.append(line)
-    return interpretations[:4]  # cap at 4
+    return interpretations[:5]  # cap at 5
 
 
 def _generate_multi_candidates(
