@@ -95,6 +95,7 @@ export type QueryStep =
   | 'classifying'
   | 'extracting'
   | 'retrieving'
+  | 'checking_session_memory'
   | 'generating'
   | 'validating'
   | 'optimizing'

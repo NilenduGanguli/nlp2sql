@@ -45,7 +45,7 @@ def make_session_lookup(knowledge_store, graph) -> Callable[[Dict[str, Any]], Di
             _trace.append(trace.finish().to_dict())
             return {**state, "_trace": _trace}
 
-        query = state.get("enriched_query") or state.get("user_input", "")
+        query = state.get("user_input") or state.get("enriched_query", "")
         try:
             match = knowledge_store.find_session_match(query, graph)
         except Exception as exc:

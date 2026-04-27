@@ -50,6 +50,25 @@ _NODE_TO_STEP: Dict[str, str] = {
     "format_result":       "formatting",
 }
 
+# Deterministic next-node lookup so we can emit a "step" label that
+# describes what is *currently running* (not the node that just completed).
+# Conditional edges are best-effort — see _next_step_label below.
+_NODE_TO_NEXT: Dict[str, Optional[str]] = {
+    "enrich_query":        "classify_intent",
+    "classify_intent":     "extract_entities",
+    "extract_entities":    "retrieve_schema",
+    "retrieve_schema":     "session_lookup",
+    "session_lookup":      "check_clarification",
+    "check_clarification": "generate_sql",
+    "generate_sql":        "validate_sql",
+    "validate_sql":        "optimize_sql",
+    "optimize_sql":        "present_sql",
+    "kyc_business_agent":  "generate_sql",
+    "present_sql":         None,
+    "execute_query":       "format_result",
+    "format_result":       None,
+}
+
 
 def _build_initial_state(user_input: str, history: list, **kwargs) -> Dict[str, Any]:
     return {
@@ -114,19 +133,27 @@ async def stream_query(
                 # LangGraph compiled graph exposes .stream() which yields
                 # {node_name: state_after_node} after each node completes.
                 if hasattr(pipeline, "stream"):
+                    # Emit the FIRST step label upfront so the UI shows what's
+                    # currently running, not what just finished. We pick the
+                    # first real node in the pipeline.
+                    first_node = (
+                        "enrich_query"
+                        if getattr(config, "query_enricher_enabled", True)
+                        else "classify_intent"
+                    )
+                    loop.call_soon_threadsafe(
+                        queue.put_nowait,
+                        ("step", {"step": _NODE_TO_STEP.get(first_node, first_node)}),
+                    )
+
                     for chunk in pipeline.stream(initial_state):
                         node_name = next(iter(chunk))
                         state = chunk[node_name]
                         last_state = state
 
-                        step = _NODE_TO_STEP.get(node_name, node_name)
-                        # Don't show "enriching" when enricher is disabled (node
-                        # is a no-op pass-through, not a real LLM call)
-                        if node_name == "enrich_query" and not getattr(config, "query_enricher_enabled", True):
-                            pass
-                        # Don't show a step badge for the clarification check node —
-                        # emit a clarification event instead when needed
-                        elif node_name == "check_clarification":
+                        # check_clarification: don't emit a step badge — emit a
+                        # clarification event instead when needed.
+                        if node_name == "check_clarification":
                             if state.get("need_clarification"):
                                 loop.call_soon_threadsafe(
                                     queue.put_nowait,
@@ -139,9 +166,19 @@ async def stream_query(
                                         },
                                     ),
                                 )
-                        else:
+
+                        # Emit the NEXT node's label so the UI describes
+                        # what's currently running. Skip if there's no next
+                        # (terminal node) or it's a no-op for the UI.
+                        next_node = _NODE_TO_NEXT.get(node_name)
+                        # If clarification is needed, retrieval flows go to
+                        # check_clarification → END; don't preview "generating".
+                        if next_node == "generate_sql" and state.get("need_clarification"):
+                            next_node = None
+                        if next_node and next_node != "check_clarification":
                             loop.call_soon_threadsafe(
-                                queue.put_nowait, ("step", {"step": step})
+                                queue.put_nowait,
+                                ("step", {"step": _NODE_TO_STEP.get(next_node, next_node)}),
                             )
 
                         # Emit trace step as soon as each node completes
