@@ -20,7 +20,6 @@ from agent.sql_skeleton import sql_skeleton
 logger = logging.getLogger(__name__)
 
 MIN_ACCEPT_COUNT = 3
-MIN_DISTINCT_SESSIONS = 2
 
 _SIGNAL_WEIGHTS_CURATOR = {
     "ran_unchanged": 1.0, "opened_in_editor": 0.5, "copied_sql": 0.3,
@@ -62,7 +61,7 @@ def aggregate_patterns(
     qtoks = _tokenize(accepted_q)
 
     cluster: List[KnowledgeEntry] = []
-    distinct_sessions = set()
+    cluster_ids = set()
     for e in store.static_entries:
         if e.source != "query_session" or e.category != "query_session":
             continue
@@ -78,11 +77,11 @@ def aggregate_patterns(
         if accepted_tables and not (tables & accepted_tables):
             continue
         cluster.append(e)
-        distinct_sessions.add(e.id)
+        cluster_ids.add(e.id)
 
-    if accepted_entry.id not in distinct_sessions:
+    if accepted_entry.id not in cluster_ids:
         cluster.append(accepted_entry)
-        distinct_sessions.add(accepted_entry.id)
+        cluster_ids.add(accepted_entry.id)
 
     accept_count = len(cluster)
 
@@ -101,7 +100,6 @@ def aggregate_patterns(
 
     eligible = manual_promotion or (
         accept_count >= MIN_ACCEPT_COUNT
-        and len(distinct_sessions) >= MIN_DISTINCT_SESSIONS
         and neg < accept_count / 2
     )
 

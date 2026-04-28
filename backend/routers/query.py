@@ -21,7 +21,7 @@ import threading
 import time
 from typing import Any, Dict, List, Literal, Optional
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 from sse_starlette.sse import EventSourceResponse
 
 from backend.deps import get_config, get_knowledge_store, get_llm, get_pipeline
@@ -711,6 +711,7 @@ class _ManualPromoteRequest(_BaseModel):
     sql: str
     user_input: str
     tables_used: List[str] = []
+    mode: Optional[Literal["curator", "consumer"]] = None
 
 
 @router.post("/patterns/manual-promote")
@@ -718,7 +719,9 @@ def manual_promote(
     req: _ManualPromoteRequest,
     knowledge_store=Depends(get_knowledge_store),
 ) -> Dict[str, str]:
-    """Force-promote a SQL/query pair to a verified pattern (curator-only UI control)."""
+    """Force-promote a SQL/query pair to a verified pattern (curator-only)."""
+    if (req.mode or "curator") != "curator":
+        raise HTTPException(status_code=403, detail="manual-promote requires curator mode")
     if not knowledge_store:
         return {"status": "skipped", "reason": "no_knowledge_store"}
 

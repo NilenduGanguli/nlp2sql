@@ -97,5 +97,5 @@ def test_negative_signals_block_promotion(tmp_path):
                                     mode="curator", sql_hash="x", metadata={}))
         aggregate_patterns(store, e, sigs, mode="curator")
 
-    # Should not be promoted: 15 abandonments vs 3 accepts → negatives dominate
-    assert all(p.negative_signals == 0 or p.negative_signals < 5 for p in store.patterns) is False or store.patterns == []
+    # 15 abandonments (weight 0.5 each) vs 3 accepts → neg=7.5, threshold 1.5 → blocked
+    assert store.patterns == []
