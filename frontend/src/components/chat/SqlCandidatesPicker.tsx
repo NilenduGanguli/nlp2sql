@@ -25,6 +25,7 @@ export const SqlCandidatesPicker: React.FC<SqlCandidatesPickerProps> = ({
   reusedFromSession,
 }) => {
   const { mode } = useUserMode()
+  const isCurator = mode === 'curator'
   const [showAll, setShowAll] = useState(false)
   const [expandedId, setExpandedId] = useState<string | null>(null)
   const [checkedIds, setCheckedIds] = useState<Set<string>>(
@@ -53,7 +54,9 @@ export const SqlCandidatesPicker: React.FC<SqlCandidatesPickerProps> = ({
   const handleAccept = () => {
     if (submitted) return
     const accepted = candidates.filter((c) => checkedIds.has(c.id))
-    const rejected = candidates.filter((c) => !checkedIds.has(c.id))
+    const rejected = isCurator
+      ? candidates.filter((c) => !checkedIds.has(c.id))
+      : []
     if (accepted.length === 0 || !executeId) return
     setSubmitted(true)
     onAccept(accepted, rejected, executeId)
@@ -91,7 +94,7 @@ export const SqlCandidatesPicker: React.FC<SqlCandidatesPickerProps> = ({
           {reusedFromSession ? '\u267B ' : ''}
           {headerLabel}
         </div>
-        {mode === 'curator' && (
+        {isCurator && (
           <div style={{ fontSize: 12, color: '#7a7a9a', lineHeight: 1.5 }}>
             Check each interpretation that is valid for your question. Pick one to execute now.
             The set you accept will be remembered so we can answer similar questions without re-asking.
@@ -125,7 +128,7 @@ export const SqlCandidatesPicker: React.FC<SqlCandidatesPickerProps> = ({
             >
               <div style={{ padding: '10px 14px' }}>
                 <div style={{ display: 'flex', alignItems: 'flex-start', gap: 10 }}>
-                  {mode === 'curator' && (
+                  {isCurator && (
                     <input
                       type="checkbox"
                       checked={isChecked}
@@ -199,7 +202,7 @@ export const SqlCandidatesPicker: React.FC<SqlCandidatesPickerProps> = ({
                       type="radio"
                       name="execute_candidate"
                       checked={isExecute}
-                      disabled={!isChecked || submitted}
+                      disabled={(isCurator && !isChecked) || submitted}
                       onChange={() => setExecuteId(candidate.id)}
                       style={{ accentColor: '#7c6af7' }}
                     />
@@ -294,10 +297,10 @@ export const SqlCandidatesPicker: React.FC<SqlCandidatesPickerProps> = ({
             }}
           >
             {submitted
-              ? mode === 'curator'
+              ? isCurator
                 ? '\u2713 Saved'
                 : '\u2713 Done'
-              : mode === 'curator'
+              : isCurator
                 ? `Accept Selected (${checkedIds.size}) & Run`
                 : 'Run'}
           </button>
