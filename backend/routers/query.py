@@ -657,6 +657,7 @@ async def accept_query(
         _pairs = [(p.question, p.answer) for p in req.clarification_pairs]
         _legacy_sql = req.sql or (accepted_list[0].sql if accepted_list else "")
         _legacy_expl = req.explanation
+        _mode = req.mode or "curator"
 
         async def _analyze_bg():
             # 3a. Comprehensive session learning (one rich entry).
@@ -677,6 +678,13 @@ async def accept_query(
                 if entry is not None:
                     _store.add_session_entry(entry)
                     logger.info("Session learning recorded entry %s", entry.id)
+                    try:
+                        from agent.pattern_aggregator import aggregate_patterns
+                        from backend.deps import get_signal_log
+                        sigs = get_signal_log()
+                        aggregate_patterns(_store, entry, sigs, mode=_mode, manual_promotion=False)
+                    except Exception as agg_exc:
+                        logger.warning("pattern aggregation failed: %s", agg_exc)
                 else:
                     raise ValueError("session analyzer returned None")
             except Exception as exc:
