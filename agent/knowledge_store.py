@@ -91,6 +91,35 @@ class LearnedPattern:
         return cls(**d)
 
 
+@dataclass
+class VerifiedPattern:
+    """A SQL skeleton promoted to verified status after multiple curator accepts.
+
+    Distinct from ``LearnedPattern`` (clarification-Q&A flavor) — verified patterns
+    are SQL templates that have been independently confirmed across ≥3 sessions
+    and become first-line candidates for future queries.
+    """
+    pattern_id: str             # vp_<hash>
+    sql_skeleton: str           # canonical normalized SQL (literals stripped)
+    exemplar_query: str         # canonical phrasing (most recent accepted)
+    exemplar_sql: str           # full SQL with literals from the exemplar accept
+    tables_used: List[str] = field(default_factory=list)
+    accept_count: int = 0       # distinct curator-accept sessions backing this pattern
+    consumer_uses: int = 0
+    negative_signals: int = 0
+    score: float = 0.0
+    promoted_at: float = 0.0
+    source_entry_ids: List[str] = field(default_factory=list)
+    manual_promotion: bool = False
+
+    def to_dict(self) -> Dict[str, Any]:
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, d: Dict[str, Any]) -> "VerifiedPattern":
+        return cls(**d)
+
+
 # ---------------------------------------------------------------------------
 # KYCKnowledgeStore
 # ---------------------------------------------------------------------------
@@ -101,6 +130,7 @@ class KYCKnowledgeStore:
     def __init__(self, persist_path: Optional[str] = None):
         self.static_entries: List[KnowledgeEntry] = []
         self.learned_patterns: List[LearnedPattern] = []
+        self.patterns: List[VerifiedPattern] = []
         self._lock = threading.Lock()
         self._persist_path = persist_path or self._default_persist_path()
         self._load_from_disk()
@@ -126,6 +156,9 @@ class KYCKnowledgeStore:
             self.learned_patterns = [
                 LearnedPattern.from_dict(p) for p in data.get("learned_patterns", [])
             ]
+            self.patterns = [
+                VerifiedPattern.from_dict(p) for p in data.get("patterns", [])
+            ]
             # Static entries are loaded fresh from docs at startup, but we
             # also restore any manually-added ones and accepted query sessions.
             for e in data.get("manual_entries", []):
@@ -148,6 +181,7 @@ class KYCKnowledgeStore:
             "version": "1",
             "saved_at": time.time(),
             "learned_patterns": [p.to_dict() for p in self.learned_patterns],
+            "patterns": [p.to_dict() for p in self.patterns],
             "manual_entries": [
                 e.to_dict() for e in self.static_entries if e.source == "manual"
             ],
@@ -391,6 +425,44 @@ class KYCKnowledgeStore:
                 self.save_to_disk()
                 return True
         return False
+
+    # ---------------------------------------------------- verified patterns
+    def add_pattern(self, pattern: VerifiedPattern) -> None:
+        """Insert a verified pattern, replacing any existing entry with the same id."""
+        with self._lock:
+            self.patterns = [p for p in self.patterns if p.pattern_id != pattern.pattern_id]
+            self.patterns.append(pattern)
+            self.save_to_disk()
+
+    def find_verified_pattern(self, query: str, graph) -> Optional[VerifiedPattern]:
+        """Return the highest-scoring verified pattern whose exemplar_query
+        Jaccard-matches ``query`` ≥ SESSION_MATCH_THRESHOLD AND whose
+        ``tables_used`` all still exist in the live graph.
+
+        Verify-on-read: tables that have been dropped from the graph cause the
+        pattern to be skipped (stale schema reference).
+        """
+        if not query or not query.strip():
+            return None
+        qtoks = _tokenize(query)
+        if not qtoks:
+            return None
+
+        best: Optional[VerifiedPattern] = None
+        best_score = -1.0
+        with self._lock:
+            for p in self.patterns:
+                if not p.exemplar_query:
+                    continue
+                jacc = _jaccard(qtoks, _tokenize(p.exemplar_query))
+                if jacc < SESSION_MATCH_THRESHOLD:
+                    continue
+                if not all(graph.get_node("Table", t) for t in p.tables_used):
+                    continue
+                if p.score > best_score:
+                    best = p
+                    best_score = p.score
+        return best
 
     # ----------------------------------------------------------- pruning
     def _prune_if_needed(self) -> None:
