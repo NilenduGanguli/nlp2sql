@@ -34,6 +34,7 @@ from knowledge_graph.init_graph import initialize_graph
 from backend.routers import admin, health, query, schema, sql, graph as graph_router
 from backend.routers import prompts as prompts_router
 from backend.routers import kyc_agent as kyc_agent_router
+from backend.routers import signals as signals_router
 
 _log_level = os.getenv("LOG_LEVEL", "INFO").upper()
 logging.basicConfig(
@@ -267,6 +268,7 @@ app.include_router(graph_router.router, prefix="/api")
 app.include_router(admin.router, prefix="/api")
 app.include_router(prompts_router.router, prefix="/api")
 app.include_router(kyc_agent_router.router, prefix="/api")
+app.include_router(signals_router.router, prefix="/api")
 
 # ---------------------------------------------------------------------------
 # Static file serving — React SPA (must come AFTER all API routers)
