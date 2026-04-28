@@ -3,6 +3,7 @@ import { AgGridReact } from 'ag-grid-react'
 import type { ColDef } from 'ag-grid-community'
 import type { QueryResult } from '../../types'
 import { useChatStore } from '../../store/chatStore'
+import { RefineButton } from './RefineButton'
 import 'ag-grid-community/styles/ag-grid.css'
 import 'ag-grid-community/styles/ag-theme-alpine.css'
 
@@ -14,7 +15,9 @@ interface SqlResultCardProps {
 export const SqlResultCard: React.FC<SqlResultCardProps> = ({ result, onOpenInEditor }) => {
   const gridRef = useRef<AgGridReact>(null)
   const [copied, setCopied] = React.useState(false)
+  const [savedAsPattern, setSavedAsPattern] = React.useState(false)
   const emitSignal = useChatStore((s) => s.emitSignal)
+  const branchConversation = useChatStore((s) => s.branchConversation)
 
   const colDefs: ColDef[] = result.columns.map((col) => ({
     field: col,
@@ -50,6 +53,27 @@ export const SqlResultCard: React.FC<SqlResultCardProps> = ({ result, onOpenInEd
   const handleExportCsv = useCallback(() => {
     gridRef.current?.api?.exportDataAsCsv()
   }, [])
+
+  const handleRefine = useCallback(() => {
+    window.dispatchEvent(new CustomEvent('chat-prefill-input', { detail: { query: 'refine: ' } }))
+  }, [])
+
+  const handleBranch = useCallback(() => {
+    branchConversation()
+  }, [branchConversation])
+
+  const handleSaveAsPattern = useCallback(async () => {
+    try {
+      const res = await fetch('/api/patterns/manual-promote', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ sql: result.sql, user_input: result.summary || '' }),
+      })
+      if (res.ok) setSavedAsPattern(true)
+    } catch (err) {
+      console.warn('manual-promote failed:', err)
+    }
+  }, [result.sql, result.summary])
 
   return (
     <div
@@ -155,6 +179,12 @@ export const SqlResultCard: React.FC<SqlResultCardProps> = ({ result, onOpenInEd
           </span>
         )}
         <div style={{ flex: 1 }} />
+        <RefineButton
+          onRefine={handleRefine}
+          onBranch={handleBranch}
+          onSaveAsPattern={handleSaveAsPattern}
+          saved={savedAsPattern}
+        />
         {onOpenInEditor && (
           <button
             onClick={handleOpenInEditor}

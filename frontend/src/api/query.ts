@@ -97,15 +97,18 @@ export function streamQuery(
   onSqlCandidates?: (candidates: Array<{ id: string; interpretation: string; sql: string; explanation: string }>) => void,
   onKycAutoAnswer?: (data: { question: string; auto_answer: string; source: string }) => void,
   onSessionMatch?: (data: SessionMatchEvent) => void,
+  previousSqlContext?: { sql: string; explanation: string } | null,
 ): AbortController {
   const controller = new AbortController()
 
   ;(async () => {
     try {
+      const body: Record<string, unknown> = { user_input: userInput, conversation_history: history }
+      if (previousSqlContext) body.previous_sql_context = previousSqlContext
       const response = await fetch('/api/query', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ user_input: userInput, conversation_history: history }),
+        body: JSON.stringify(body),
         signal: controller.signal,
       })
 

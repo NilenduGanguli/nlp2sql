@@ -48,6 +48,8 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ onOpenInEditor }) => {
     setLastSqlAccepted,
     setZeroRowsState,
     emitSignal,
+    previousSqlContext,
+    setPreviousSqlContext,
   } = useChatStore()
   const { saveSession } = useChatHistoryStore()
   const { startQuery, addLiveStep, finalizeTrace } = useTraceStore()
@@ -109,6 +111,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ onOpenInEditor }) => {
             data.validation_errors,
           )
           setLastSqlShown(data.sql)
+          setPreviousSqlContext({ sql: data.sql, explanation: data.explanation })
           setIsStreaming(false)
           setCompletedSteps([])
         },
@@ -129,10 +132,11 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ onOpenInEditor }) => {
           setReusedFromSession(true)
           setMatchedEntryId(data.matched_entry_id)
         },
+        previousSqlContext,
       )
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [addResultMessage, addErrorMessage, addClarificationMessage, addSqlPreviewMessage, addSqlCandidatesMessage, addKycAutoAnswerMessage, addLiveStep, finalizeTrace, startQuery, recordTraceForDigest, setReusedFromSession, setMatchedEntryId, setLastSqlShown],
+    [addResultMessage, addErrorMessage, addClarificationMessage, addSqlPreviewMessage, addSqlCandidatesMessage, addKycAutoAnswerMessage, addLiveStep, finalizeTrace, startQuery, recordTraceForDigest, setReusedFromSession, setMatchedEntryId, setLastSqlShown, setPreviousSqlContext, previousSqlContext],
   )
 
   /** Fresh query submitted by the user via the input box. */

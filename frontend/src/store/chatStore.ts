@@ -64,6 +64,8 @@ interface ChatStore {
   lastSqlAccepted: boolean
   /** Non-null when the most recent result had zero rows, within the last 60 s. */
   zeroRowsState: { ts: number; sql: string } | null
+  /** Snapshot of the most recent successful SQL/explanation, sent to the backend so the LLM can refine it. */
+  previousSqlContext: { sql: string; explanation: string } | null
 
   addUserMessage(content: string): void
   addResultMessage(result: QueryResult): void
@@ -108,6 +110,9 @@ interface ChatStore {
   setLastSqlShown(sql: string | null): void
   setLastSqlAccepted(v: boolean): void
   setZeroRowsState(s: { ts: number; sql: string } | null): void
+  setPreviousSqlContext(ctx: { sql: string; explanation: string } | null): void
+  /** Logical reset: clear messages/history but keep sessionId. Used by ⤴ Branch. */
+  branchConversation(): void
 }
 
 function makeId(): string {
@@ -127,6 +132,7 @@ export const useChatStore = create<ChatStore>((set, get) => ({
   lastSqlShown: null,
   lastSqlAccepted: false,
   zeroRowsState: null,
+  previousSqlContext: null,
 
   addUserMessage: (content) =>
     set((state) => ({
@@ -324,6 +330,7 @@ export const useChatStore = create<ChatStore>((set, get) => ({
       messages: [], history: [], activeBaseQuery: '', clarificationPairs: [],
       lastSuccessfulResult: null, currentSessionDigest: _emptyDigest(), lastReusedFromSession: false,
       matchedEntryId: null, lastSqlShown: null, lastSqlAccepted: false, zeroRowsState: null,
+      previousSqlContext: null,
     }),
 
   restoreSession: (messages, history) =>
@@ -331,6 +338,7 @@ export const useChatStore = create<ChatStore>((set, get) => ({
       messages, history, activeBaseQuery: '', clarificationPairs: [],
       lastSuccessfulResult: null, currentSessionDigest: _emptyDigest(), lastReusedFromSession: false,
       matchedEntryId: null, lastSqlShown: null, lastSqlAccepted: false, zeroRowsState: null,
+      previousSqlContext: null,
     }),
 
   newSessionId: () => set({ sessionId: crypto.randomUUID(), matchedEntryId: null }),
@@ -340,6 +348,21 @@ export const useChatStore = create<ChatStore>((set, get) => ({
   setLastSqlShown: (sql) => set({ lastSqlShown: sql, lastSqlAccepted: false }),
   setLastSqlAccepted: (v) => set({ lastSqlAccepted: v }),
   setZeroRowsState: (s) => set({ zeroRowsState: s }),
+  setPreviousSqlContext: (ctx) => set({ previousSqlContext: ctx }),
+  branchConversation: () => set({
+    messages: [],
+    history: [],
+    activeBaseQuery: '',
+    clarificationPairs: [],
+    lastSuccessfulResult: null,
+    currentSessionDigest: _emptyDigest(),
+    lastReusedFromSession: false,
+    matchedEntryId: null,
+    lastSqlShown: null,
+    lastSqlAccepted: false,
+    zeroRowsState: null,
+    previousSqlContext: null,
+  }),
 
   emitSignal: async (event, sql, metadata = {}) => {
     const { sessionId, matchedEntryId } = get()

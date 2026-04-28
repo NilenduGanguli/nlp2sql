@@ -705,3 +705,50 @@ async def accept_query(
         asyncio.create_task(_analyze_bg())
 
     return {"status": "accepted", "recorded": recorded_ids}
+
+
+class _ManualPromoteRequest(_BaseModel):
+    sql: str
+    user_input: str
+    tables_used: List[str] = []
+
+
+@router.post("/patterns/manual-promote")
+def manual_promote(
+    req: _ManualPromoteRequest,
+    knowledge_store=Depends(get_knowledge_store),
+) -> Dict[str, str]:
+    """Force-promote a SQL/query pair to a verified pattern (curator-only UI control)."""
+    if not knowledge_store:
+        return {"status": "skipped", "reason": "no_knowledge_store"}
+
+    from agent.knowledge_store import KnowledgeEntry
+    from agent.pattern_aggregator import aggregate_patterns
+    from backend.deps import get_signal_log
+    import time as _time
+    import uuid as _uuid
+
+    entry = KnowledgeEntry(
+        id=f"manual_{_uuid.uuid4().hex[:8]}",
+        source="query_session",
+        category="query_session",
+        content=req.user_input,
+        metadata={
+            "original_query": req.user_input,
+            "enriched_query": "",
+            "tables_used": req.tables_used,
+            "accepted_candidates": [{"interpretation": "manual", "sql": req.sql, "explanation": ""}],
+            "rejected_candidates": [],
+            "clarifications": [],
+            "created_at": _time.time(),
+        },
+    )
+    knowledge_store.add_session_entry(entry)
+    try:
+        sigs = get_signal_log()
+        pattern = aggregate_patterns(knowledge_store, entry, sigs, mode="curator", manual_promotion=True)
+    except Exception as exc:
+        logger.warning("manual-promote aggregation failed: %s", exc)
+        return {"status": "error", "pattern_id": ""}
+
+    return {"status": "promoted", "pattern_id": pattern.pattern_id if pattern else ""}
