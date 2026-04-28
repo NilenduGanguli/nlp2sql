@@ -105,6 +105,8 @@ def make_sql_generator(llm) -> Callable[[AgentState], AgentState]:
 
         is_followup = intent == "RESULT_FOLLOWUP"
         is_refine = intent == "QUERY_REFINE"
+        prev_sql_for_mode = (state.get("previous_sql_context") or {}).get("sql", "")
+        refinement_mode = bool(prev_sql_for_mode) and (is_followup or is_refine)
 
         # Build conversation context
         # RESULT_FOLLOWUP and QUERY_REFINE get more turns so the LLM sees prior SQL clearly
@@ -279,6 +281,7 @@ def make_sql_generator(llm) -> Callable[[AgentState], AgentState]:
                             "sql_preview": generated_sql[:300],
                             "retry_count": retry_count,
                             "candidates": len(candidates),
+                            "refinement_mode": refinement_mode,
                         }
                         _trace.append(trace.finish().to_dict())
                         return {
@@ -303,6 +306,7 @@ def make_sql_generator(llm) -> Callable[[AgentState], AgentState]:
             "sql_length": len(generated_sql),
             "sql_preview": generated_sql[:300],
             "retry_count": retry_count,
+            "refinement_mode": refinement_mode,
         }
         _trace.append(trace.finish().to_dict())
 
