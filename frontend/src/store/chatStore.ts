@@ -58,6 +58,12 @@ interface ChatStore {
   sessionId: string
   /** The matched query_session entry_id, if the backend short-circuited via session-match. */
   matchedEntryId: string | null
+  /** The last SQL shown to the user (via sql_preview or sql_candidates). Used for abandon detection. */
+  lastSqlShown: string | null
+  /** True once the user explicitly accepted the last shown SQL. Reset whenever lastSqlShown changes. */
+  lastSqlAccepted: boolean
+  /** Non-null when the most recent result had zero rows, within the last 60 s. */
+  zeroRowsState: { ts: number; sql: string } | null
 
   addUserMessage(content: string): void
   addResultMessage(result: QueryResult): void
@@ -99,6 +105,9 @@ interface ChatStore {
   setMatchedEntryId(id: string | null): void
   /** Fire a signal event for the given SQL. */
   emitSignal(event: SignalEventType, sql: string, metadata?: Record<string, unknown>): Promise<void>
+  setLastSqlShown(sql: string | null): void
+  setLastSqlAccepted(v: boolean): void
+  setZeroRowsState(s: { ts: number; sql: string } | null): void
 }
 
 function makeId(): string {
@@ -115,6 +124,9 @@ export const useChatStore = create<ChatStore>((set, get) => ({
   lastReusedFromSession: false,
   sessionId: crypto.randomUUID(),
   matchedEntryId: null,
+  lastSqlShown: null,
+  lastSqlAccepted: false,
+  zeroRowsState: null,
 
   addUserMessage: (content) =>
     set((state) => ({
@@ -311,19 +323,23 @@ export const useChatStore = create<ChatStore>((set, get) => ({
     set({
       messages: [], history: [], activeBaseQuery: '', clarificationPairs: [],
       lastSuccessfulResult: null, currentSessionDigest: _emptyDigest(), lastReusedFromSession: false,
-      matchedEntryId: null,
+      matchedEntryId: null, lastSqlShown: null, lastSqlAccepted: false, zeroRowsState: null,
     }),
 
   restoreSession: (messages, history) =>
     set({
       messages, history, activeBaseQuery: '', clarificationPairs: [],
       lastSuccessfulResult: null, currentSessionDigest: _emptyDigest(), lastReusedFromSession: false,
-      matchedEntryId: null,
+      matchedEntryId: null, lastSqlShown: null, lastSqlAccepted: false, zeroRowsState: null,
     }),
 
   newSessionId: () => set({ sessionId: crypto.randomUUID(), matchedEntryId: null }),
 
   setMatchedEntryId: (id) => set({ matchedEntryId: id }),
+
+  setLastSqlShown: (sql) => set({ lastSqlShown: sql, lastSqlAccepted: false }),
+  setLastSqlAccepted: (v) => set({ lastSqlAccepted: v }),
+  setZeroRowsState: (s) => set({ zeroRowsState: s }),
 
   emitSignal: async (event, sql, metadata = {}) => {
     const { sessionId, matchedEntryId } = get()

@@ -1,6 +1,7 @@
 import React, { useRef, useEffect } from 'react'
 import type { ChatMessage } from '../../types'
 import { MessageBubble } from './MessageBubble'
+import { useChatStore } from '../../store/chatStore'
 
 interface MessageListProps {
   messages: ChatMessage[]
@@ -29,11 +30,20 @@ export const MessageList: React.FC<MessageListProps> = ({
   executedSqlMessageId,
 }) => {
   const containerRef = useRef<HTMLDivElement>(null)
+  const setZeroRowsState = useChatStore((s) => s.setZeroRowsState)
 
   useEffect(() => {
     const el = containerRef.current
     if (el) el.scrollTop = el.scrollHeight
   }, [messages])
+
+  useEffect(() => {
+    const last = messages[messages.length - 1]
+    const result = last?.result
+    if (result && result.total_rows === 0 && result.sql) {
+      setZeroRowsState({ ts: Date.now(), sql: result.sql })
+    }
+  }, [messages, setZeroRowsState])
 
   if (messages.length === 0) {
     return (

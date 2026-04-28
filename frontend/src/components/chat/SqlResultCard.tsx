@@ -2,6 +2,7 @@ import React, { useRef, useCallback } from 'react'
 import { AgGridReact } from 'ag-grid-react'
 import type { ColDef } from 'ag-grid-community'
 import type { QueryResult } from '../../types'
+import { useChatStore } from '../../store/chatStore'
 import 'ag-grid-community/styles/ag-grid.css'
 import 'ag-grid-community/styles/ag-theme-alpine.css'
 
@@ -13,6 +14,7 @@ interface SqlResultCardProps {
 export const SqlResultCard: React.FC<SqlResultCardProps> = ({ result, onOpenInEditor }) => {
   const gridRef = useRef<AgGridReact>(null)
   const [copied, setCopied] = React.useState(false)
+  const emitSignal = useChatStore((s) => s.emitSignal)
 
   const colDefs: ColDef[] = result.columns.map((col) => ({
     field: col,
@@ -36,7 +38,14 @@ export const SqlResultCard: React.FC<SqlResultCardProps> = ({ result, onOpenInEd
     await navigator.clipboard.writeText(result.sql)
     setCopied(true)
     setTimeout(() => setCopied(false), 2000)
-  }, [result.sql])
+    void emitSignal('copied_sql', result.sql, {})
+  }, [result.sql, emitSignal])
+
+  const handleOpenInEditor = useCallback(() => {
+    if (!onOpenInEditor) return
+    onOpenInEditor(result.sql)
+    void emitSignal('opened_in_editor', result.sql, {})
+  }, [onOpenInEditor, result.sql, emitSignal])
 
   const handleExportCsv = useCallback(() => {
     gridRef.current?.api?.exportDataAsCsv()
@@ -148,7 +157,7 @@ export const SqlResultCard: React.FC<SqlResultCardProps> = ({ result, onOpenInEd
         <div style={{ flex: 1 }} />
         {onOpenInEditor && (
           <button
-            onClick={() => onOpenInEditor(result.sql)}
+            onClick={handleOpenInEditor}
             style={{
               fontSize: 11,
               padding: '3px 10px',

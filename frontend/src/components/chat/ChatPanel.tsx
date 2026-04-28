@@ -41,6 +41,13 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ onOpenInEditor }) => {
     setReusedFromSession,
     newSessionId,
     setMatchedEntryId,
+    lastSqlShown,
+    lastSqlAccepted,
+    zeroRowsState,
+    setLastSqlShown,
+    setLastSqlAccepted,
+    setZeroRowsState,
+    emitSignal,
   } = useChatStore()
   const { saveSession } = useChatHistoryStore()
   const { startQuery, addLiveStep, finalizeTrace } = useTraceStore()
@@ -101,12 +108,14 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ onOpenInEditor }) => {
             data.validation_passed,
             data.validation_errors,
           )
+          setLastSqlShown(data.sql)
           setIsStreaming(false)
           setCompletedSteps([])
         },
         // onSqlCandidates — multiple interpretations
         (candidates) => {
           addSqlCandidatesMessage(candidates)
+          if (candidates.length > 0) setLastSqlShown(candidates[0].sql)
           setIsStreaming(false)
           setCompletedSteps([])
         },
@@ -123,13 +132,20 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ onOpenInEditor }) => {
       )
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [addResultMessage, addErrorMessage, addClarificationMessage, addSqlPreviewMessage, addSqlCandidatesMessage, addKycAutoAnswerMessage, addLiveStep, finalizeTrace, startQuery, recordTraceForDigest, setReusedFromSession, setMatchedEntryId],
+    [addResultMessage, addErrorMessage, addClarificationMessage, addSqlPreviewMessage, addSqlCandidatesMessage, addKycAutoAnswerMessage, addLiveStep, finalizeTrace, startQuery, recordTraceForDigest, setReusedFromSession, setMatchedEntryId, setLastSqlShown],
   )
 
   /** Fresh query submitted by the user via the input box. */
   const handleSubmitContent = useCallback(
     (content: string) => {
       if (!content.trim() || isStreaming) return
+      if (lastSqlShown && !lastSqlAccepted) {
+        void emitSignal('abandoned_session', lastSqlShown, {})
+      }
+      if (zeroRowsState && Date.now() - zeroRowsState.ts < 60_000) {
+        void emitSignal('zero_rows_retry', zeroRowsState.sql, {})
+        setZeroRowsState(null)
+      }
       // Save as the base query for any clarification chain that follows
       setActiveBaseQuery(content)
       // Reset accumulated session digest at the start of a fresh turn
@@ -144,7 +160,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ onOpenInEditor }) => {
       _stream(enrichedInput, historySnap)
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [isStreaming, history, _stream, getFollowUpContext, resetSessionDigest, newSessionId],
+    [isStreaming, history, _stream, getFollowUpContext, resetSessionDigest, newSessionId, lastSqlShown, lastSqlAccepted, zeroRowsState, emitSignal, setZeroRowsState],
   )
 
   const handleSubmit = useCallback(() => {
@@ -277,6 +293,8 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ onOpenInEditor }) => {
       const executed = accepted.find((c) => c.id === executedId) ?? accepted[0]
       if (!executed) return
 
+      setLastSqlAccepted(true)
+
       const queryContext = activeBaseQuery || lastUserInputRef.current
       const { clarificationPairs, currentSessionDigest } = useChatStore.getState()
 
@@ -332,7 +350,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ onOpenInEditor }) => {
       )
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [activeBaseQuery, history, addUserMessage, addSqlPreviewMessage, addErrorMessage, addLiveStep],
+    [activeBaseQuery, history, addUserMessage, addSqlPreviewMessage, addErrorMessage, addLiveStep, setLastSqlAccepted],
   )
 
   /**
@@ -362,6 +380,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ onOpenInEditor }) => {
         return
       }
 
+      setLastSqlAccepted(true)
       acceptGeneratedQuery(
         queryContext,
         [{ id: 'legacy', sql, explanation, interpretation: 'primary' }],
@@ -372,7 +391,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ onOpenInEditor }) => {
       ).catch((err) => console.warn('Failed to send query feedback:', err))
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [activeBaseQuery, messages],
+    [activeBaseQuery, messages, setLastSqlAccepted],
   )
 
   /** Save current chat to history and start fresh. */
