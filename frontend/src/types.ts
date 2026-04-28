@@ -272,3 +272,23 @@ export interface PromptFile {
   name: string
   content: string
 }
+
+// ──────────────────────────────────────────────────────────
+// Signals
+// ──────────────────────────────────────────────────────────
+export type SignalEventType =
+  | 'copied_sql'
+  | 'opened_in_editor'
+  | 'ran_unchanged'
+  | 'edited_then_ran'
+  | 'abandoned_session'
+  | 'zero_rows_retry'
+
+export interface SignalEvent {
+  event: SignalEventType
+  session_id: string
+  entry_id?: string | null
+  mode: UserMode
+  sql_hash: string
+  metadata: Record<string, unknown>
+}

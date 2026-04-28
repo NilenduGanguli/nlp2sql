@@ -1,5 +1,7 @@
 import { create } from 'zustand'
-import type { ChatMessage, ConversationMessage, QueryResult, TraceStep } from '../types'
+import { postSignal, sha1Hex } from '../api/signals'
+import { useUserMode } from '../hooks/useUserMode'
+import type { ChatMessage, ConversationMessage, QueryResult, TraceStep, SignalEventType } from '../types'
 
 interface ClarificationPair {
   question: string
@@ -52,6 +54,10 @@ interface ChatStore {
   currentSessionDigest: SessionDigest
   /** Set true when the latest assistant turn was short-circuited from a saved session. */
   lastReusedFromSession: boolean
+  /** UUID for the current top-level query session. Reset on every new top-level query. */
+  sessionId: string
+  /** The matched query_session entry_id, if the backend short-circuited via session-match. */
+  matchedEntryId: string | null
 
   addUserMessage(content: string): void
   addResultMessage(result: QueryResult): void
@@ -87,6 +93,12 @@ interface ChatStore {
   /** Replace current chat with a saved session. */
   restoreSession(messages: ChatMessage[], history: ConversationMessage[]): void
   clearMessages(): void
+  /** Mint a fresh sessionId (called at the start of every new top-level query). */
+  newSessionId(): void
+  /** Set or clear the matched entry_id from a session-match SSE event. */
+  setMatchedEntryId(id: string | null): void
+  /** Fire a signal event for the given SQL. */
+  emitSignal(event: SignalEventType, sql: string, metadata?: Record<string, unknown>): Promise<void>
 }
 
 function makeId(): string {
@@ -101,6 +113,8 @@ export const useChatStore = create<ChatStore>((set, get) => ({
   lastSuccessfulResult: null,
   currentSessionDigest: _emptyDigest(),
   lastReusedFromSession: false,
+  sessionId: crypto.randomUUID(),
+  matchedEntryId: null,
 
   addUserMessage: (content) =>
     set((state) => ({
@@ -297,11 +311,31 @@ export const useChatStore = create<ChatStore>((set, get) => ({
     set({
       messages: [], history: [], activeBaseQuery: '', clarificationPairs: [],
       lastSuccessfulResult: null, currentSessionDigest: _emptyDigest(), lastReusedFromSession: false,
+      matchedEntryId: null,
     }),
 
   restoreSession: (messages, history) =>
     set({
       messages, history, activeBaseQuery: '', clarificationPairs: [],
       lastSuccessfulResult: null, currentSessionDigest: _emptyDigest(), lastReusedFromSession: false,
+      matchedEntryId: null,
     }),
+
+  newSessionId: () => set({ sessionId: crypto.randomUUID(), matchedEntryId: null }),
+
+  setMatchedEntryId: (id) => set({ matchedEntryId: id }),
+
+  emitSignal: async (event, sql, metadata = {}) => {
+    const { sessionId, matchedEntryId } = get()
+    const mode = useUserMode.getState().mode
+    const sqlHash = sql ? await sha1Hex(sql) : ''
+    await postSignal({
+      event,
+      session_id: sessionId,
+      entry_id: matchedEntryId,
+      mode,
+      sql_hash: sqlHash,
+      metadata,
+    })
+  },
 }))

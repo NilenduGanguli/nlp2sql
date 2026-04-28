@@ -39,6 +39,8 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ onOpenInEditor }) => {
     resetSessionDigest,
     recordTraceForDigest,
     setReusedFromSession,
+    newSessionId,
+    setMatchedEntryId,
   } = useChatStore()
   const { saveSession } = useChatHistoryStore()
   const { startQuery, addLiveStep, finalizeTrace } = useTraceStore()
@@ -114,13 +116,14 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ onOpenInEditor }) => {
           setIsStreaming(true)
         },
         // onSessionMatch — pipeline short-circuited from a saved session
-        (_data) => {
+        (data) => {
           setReusedFromSession(true)
+          setMatchedEntryId(data.matched_entry_id)
         },
       )
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [addResultMessage, addErrorMessage, addClarificationMessage, addSqlPreviewMessage, addSqlCandidatesMessage, addKycAutoAnswerMessage, addLiveStep, finalizeTrace, startQuery, recordTraceForDigest, setReusedFromSession],
+    [addResultMessage, addErrorMessage, addClarificationMessage, addSqlPreviewMessage, addSqlCandidatesMessage, addKycAutoAnswerMessage, addLiveStep, finalizeTrace, startQuery, recordTraceForDigest, setReusedFromSession, setMatchedEntryId],
   )
 
   /** Fresh query submitted by the user via the input box. */
@@ -131,6 +134,8 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ onOpenInEditor }) => {
       setActiveBaseQuery(content)
       // Reset accumulated session digest at the start of a fresh turn
       resetSessionDigest()
+      // Mint a fresh sessionId for signal attribution
+      newSessionId()
       const historySnap = [...history]
       setInput('')
       addUserMessage(content)
@@ -139,7 +144,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ onOpenInEditor }) => {
       _stream(enrichedInput, historySnap)
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [isStreaming, history, _stream, getFollowUpContext, resetSessionDigest],
+    [isStreaming, history, _stream, getFollowUpContext, resetSessionDigest, newSessionId],
   )
 
   const handleSubmit = useCallback(() => {
