@@ -46,6 +46,39 @@ def make_session_lookup(knowledge_store, graph) -> Callable[[Dict[str, Any]], Di
             return {**state, "_trace": _trace}
 
         query = state.get("user_input") or state.get("enriched_query", "")
+
+        try:
+            vp = knowledge_store.find_verified_pattern(query, graph)
+        except Exception as exc:
+            logger.warning("verified-pattern lookup failed: %s", exc)
+            vp = None
+
+        if vp is not None:
+            candidate = {
+                "id": "vp01",
+                "interpretation": "verified pattern",
+                "sql": vp.exemplar_sql,
+                "explanation": f"Verified pattern (score={vp.score:.1f}, accepts={vp.accept_count})",
+                "is_verified": True,
+                "pattern_id": vp.pattern_id,
+            }
+            trace.output_summary = {
+                "action": "match",
+                "match_kind": "verified_pattern",
+                "matched_pattern_id": vp.pattern_id,
+                "candidate_count": 1,
+                "matched_query": (vp.exemplar_query or "")[:80],
+            }
+            _trace.append(trace.finish().to_dict())
+            return {
+                **state,
+                "sql_candidates": [candidate],
+                "has_candidates": True,
+                "session_match_entry_id": vp.pattern_id,
+                "step": "session_matched",
+                "_trace": _trace,
+            }
+
         try:
             match = knowledge_store.find_session_match(query, graph)
         except Exception as exc:
@@ -75,7 +108,9 @@ def make_session_lookup(knowledge_store, graph) -> Callable[[Dict[str, Any]], Di
             })
 
         trace.output_summary = {
-            "action": "match", "matched_entry_id": match.id,
+            "action": "match",
+            "match_kind": "query_session",
+            "matched_entry_id": match.id,
             "candidate_count": len(candidates),
             "matched_query": (match.metadata or {}).get("original_query", "")[:80],
         }
