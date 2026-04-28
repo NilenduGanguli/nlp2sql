@@ -17,6 +17,7 @@ import {
   exportStore,
   importStore,
 } from '../api/kycAgent'
+import { PatternsTab } from '../components/kyc/PatternsTab'
 
 // ── Theme ────────────────────────────────────────────────────────────────────
 
@@ -38,7 +39,7 @@ const C = {
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
-type LeftTab = 'knowledge' | 'patterns' | 'metrics'
+type LeftTab = 'knowledge' | 'patterns' | 'verified' | 'metrics'
 
 function formatTs(epoch: number): string {
   if (!epoch) return '--'
@@ -1333,11 +1334,12 @@ export const KYCAgentPage: React.FC = () => {
         >
           {renderLeftTabButton('knowledge', 'Static')}
           {renderLeftTabButton('patterns', 'Patterns')}
+          {renderLeftTabButton('verified', 'Verified')}
           {renderLeftTabButton('metrics', 'Metrics')}
         </div>
 
         {/* Search + filter (for knowledge and patterns tabs) */}
-        {leftTab !== 'metrics' && (
+        {leftTab !== 'metrics' && leftTab !== 'verified' && (
           <div
             style={{
               padding: '10px',
@@ -1397,6 +1399,7 @@ export const KYCAgentPage: React.FC = () => {
         <div style={{ flex: 1, overflowY: 'auto' }}>
           {leftTab === 'knowledge' && renderKnowledgeList()}
           {leftTab === 'patterns' && renderPatternsList()}
+          {leftTab === 'verified' && <PatternsTab />}
           {leftTab === 'metrics' && renderMetrics()}
         </div>
 
@@ -1429,7 +1432,7 @@ export const KYCAgentPage: React.FC = () => {
             style={{ display: 'none' }}
             onChange={handleImportFile}
           />
-          {leftTab !== 'metrics' && (
+          {leftTab !== 'metrics' && leftTab !== 'verified' && (
             <span style={{ fontSize: 11, color: C.muted, marginLeft: 'auto' }}>
               {leftTab === 'knowledge' ? `${entriesTotal} entries` : `${patternsTotal} patterns`}
             </span>

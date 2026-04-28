@@ -168,6 +168,23 @@ async def delete_pattern(
 
 
 # ---------------------------------------------------------------------------
+# Verified Patterns (sql-skeleton promotion type)
+# ---------------------------------------------------------------------------
+
+@router.get("/verified-patterns")
+async def list_verified_patterns(knowledge_store=Depends(get_knowledge_store)):
+    """List verified SQL patterns (promoted from curator accepts), sorted by score."""
+    if not knowledge_store:
+        raise HTTPException(503, "Knowledge store not initialized")
+    items = sorted(
+        [p.to_dict() for p in knowledge_store.patterns],
+        key=lambda d: d.get("score", 0),
+        reverse=True,
+    )
+    return {"patterns": items, "total": len(items)}
+
+
+# ---------------------------------------------------------------------------
 # Metrics
 # ---------------------------------------------------------------------------
 

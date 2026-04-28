@@ -6,6 +6,8 @@ interface SqlCandidate {
   interpretation: string
   sql: string
   explanation: string
+  is_verified?: boolean
+  pattern_id?: string
 }
 
 interface SqlCandidatesPickerProps {
@@ -34,9 +36,16 @@ export const SqlCandidatesPicker: React.FC<SqlCandidatesPickerProps> = ({
   const [executeId, setExecuteId] = useState<string>(candidates[0]?.id ?? '')
   const [submitted, setSubmitted] = useState(false)
 
+  const sorted = React.useMemo(() => {
+    if (mode !== 'consumer') return candidates
+    return [...candidates].sort(
+      (a, b) => Number(b.is_verified || 0) - Number(a.is_verified || 0),
+    )
+  }, [candidates, mode])
+
   const visible =
-    mode === 'consumer' && !showAll ? candidates.slice(0, 1) : candidates
-  const hiddenCount = candidates.length - visible.length
+    mode === 'consumer' && !showAll ? sorted.slice(0, 1) : sorted
+  const hiddenCount = sorted.length - visible.length
 
   const toggleChecked = (id: string) => {
     setCheckedIds((prev) => {
@@ -163,9 +172,27 @@ export const SqlCandidatesPicker: React.FC<SqlCandidatesPickerProps> = ({
                         color: '#e0e0f0',
                         lineHeight: 1.5,
                         marginBottom: 4,
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: 6,
+                        flexWrap: 'wrap',
                       }}
                     >
-                      {candidate.interpretation}
+                      <span>{candidate.interpretation}</span>
+                      {candidate.is_verified && (
+                        <span
+                          style={{
+                            fontSize: 10,
+                            padding: '1px 6px',
+                            borderRadius: 999,
+                            background: 'rgba(74,222,128,0.15)',
+                            color: '#4ade80',
+                            fontWeight: 600,
+                          }}
+                        >
+                          ✓ Verified
+                        </span>
+                      )}
                     </div>
                     <div
                       style={{

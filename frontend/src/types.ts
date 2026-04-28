@@ -125,6 +125,15 @@ export interface QueryResult {
 
 export type ChatMessageType = 'user' | 'result' | 'error' | 'clarification' | 'sql_preview' | 'sql_candidates' | 'kyc_auto_answer'
 
+export interface SqlCandidate {
+  id: string
+  interpretation: string
+  sql: string
+  explanation: string
+  is_verified?: boolean
+  pattern_id?: string
+}
+
 export interface ChatMessage {
   id: string
   type: ChatMessageType
@@ -136,7 +145,7 @@ export interface ChatMessage {
   multiSelect?: boolean  // true when multiple options can be selected (AND logic)
   answered?: boolean     // true once the user has responded
   sqlPreview?: { sql: string; explanation: string; validationPassed: boolean; validationErrors: string[] }
-  sqlCandidates?: Array<{ id: string; interpretation: string; sql: string; explanation: string }>
+  sqlCandidates?: SqlCandidate[]
   /** True when these candidates were short-circuited from a saved query_session entry. */
   reusedFromSession?: boolean
   kycAutoAnswer?: { question: string; autoAnswer: string; source: string }
