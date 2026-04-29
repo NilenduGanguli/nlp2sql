@@ -239,6 +239,28 @@ class OracleMetadataExtractor:
     def _first_error_line(exc: Exception) -> str:
         return str(exc).strip().splitlines()[0] if str(exc).strip() else repr(exc)
 
+    def _run(self, cur, sql: str, binds=None) -> None:
+        """Run SQL on ``cur`` and log full context on failure.
+
+        On Oracle error, logs the offending SQL (compacted, truncated to 800
+        chars) and bind variables at ERROR level before re-raising, so the
+        retry / fallback path in ``_safe_extract`` can still react.
+        """
+        try:
+            if binds is None:
+                cur.execute(sql)
+            else:
+                cur.execute(sql, binds)
+        except Exception as oracle_err:
+            compact_sql = " ".join(sql.split())
+            if len(compact_sql) > 800:
+                compact_sql = compact_sql[:800] + "... [truncated]"
+            logger.error(
+                "Oracle query failed: %s\n  SQL: %s\n  binds: %s",
+                self._first_error_line(oracle_err), compact_sql, binds,
+            )
+            raise
+
     # ------------------------------------------------------------------
     # Schema resolution
     # ------------------------------------------------------------------
@@ -266,7 +288,7 @@ class OracleMetadataExtractor:
         prefix = self._prefix
         sql = f"SELECT DISTINCT owner FROM {prefix}_TABLES ORDER BY owner"
         with conn.cursor() as cur:
-            cur.execute(sql)
+            self._run(cur, sql)
             return [row[0] for row in cur.fetchall()]
 
     # ------------------------------------------------------------------
@@ -297,7 +319,7 @@ class OracleMetadataExtractor:
         """
         tables: List[TableNode] = []
         with conn.cursor() as cur:
-            cur.execute(sql, self._bind_schemas(schemas))
+            self._run(cur, sql, self._bind_schemas(schemas))
             for row in cur:
                 tables.append(TableNode(
                     name=row[1],
@@ -349,7 +371,7 @@ class OracleMetadataExtractor:
         """
         columns: List[ColumnNode] = []
         with conn.cursor() as cur:
-            cur.execute(sql, self._bind_schemas(schemas))
+            self._run(cur, sql, self._bind_schemas(schemas))
             for row in cur:
                 try:
                     default_raw = row[8]
@@ -403,7 +425,7 @@ class OracleMetadataExtractor:
         """
         pks: List[HasPrimaryKeyRel] = []
         with conn.cursor() as cur:
-            cur.execute(sql, self._bind_schemas(schemas))
+            self._run(cur, sql, self._bind_schemas(schemas))
             for row in cur:
                 owner, table_name, con_name, col_name, position = row
                 table_fqn = f"{owner.upper()}.{table_name.upper()}"
@@ -452,7 +474,7 @@ class OracleMetadataExtractor:
         """
         fks: List[HasForeignKeyRel] = []
         with conn.cursor() as cur:
-            cur.execute(sql, self._bind_schemas(schemas))
+            self._run(cur, sql, self._bind_schemas(schemas))
             for row in cur:
                 fk_owner, fk_table, con_name, delete_rule, fk_col, _, ref_owner, ref_table, ref_col = row
                 src_fqn = f"{fk_owner.upper()}.{fk_table.upper()}.{fk_col.upper()}"
@@ -526,7 +548,7 @@ class OracleMetadataExtractor:
                 break
             try:
                 with conn.cursor() as cur:
-                    cur.execute(attempt_sql, self._bind_schemas(schemas))
+                    self._run(cur, attempt_sql, self._bind_schemas(schemas))
                     rows = cur.fetchall()
                 _build_view_nodes(rows)
                 fetched = True
@@ -552,7 +574,7 @@ class OracleMetadataExtractor:
         """
         try:
             with conn.cursor() as cur:
-                cur.execute(mview_sql, self._bind_schemas(schemas))
+                self._run(cur, mview_sql, self._bind_schemas(schemas))
                 for row in cur:
                     try:
                         views.append(ViewNode(
@@ -596,7 +618,7 @@ class OracleMetadataExtractor:
         index_map: Dict[str, IndexNode] = {}
 
         with conn.cursor() as cur:
-            cur.execute(sql, self._bind_schemas(schemas))
+            self._run(cur, sql, self._bind_schemas(schemas))
             for row in cur:
                 owner, idx_name, table_name, idx_type, uniqueness, ts, compression = row
                 idx = IndexNode(
@@ -625,7 +647,7 @@ class OracleMetadataExtractor:
         from collections import defaultdict
         idx_columns: Dict[str, List[Tuple[str, int]]] = defaultdict(list)
         with conn.cursor() as cur:
-            cur.execute(col_sql, self._bind_schemas(schemas))
+            self._run(cur, col_sql, self._bind_schemas(schemas))
             for row in cur:
                 idx_owner, idx_name, col_name, col_pos = row
                 fqn = f"{idx_owner.upper()}.{idx_name.upper()}"
@@ -665,7 +687,7 @@ class OracleMetadataExtractor:
         """
         constraints: List[ConstraintNode] = []
         with conn.cursor() as cur:
-            cur.execute(sql, self._bind_schemas(schemas))
+            self._run(cur, sql, self._bind_schemas(schemas))
             for row in cur:
                 owner, table_name, con_name, con_type, condition, status, validated = row
                 cond_str = None
@@ -712,7 +734,7 @@ class OracleMetadataExtractor:
         """
         procedures: List[ProcedureNode] = []
         with conn.cursor() as cur:
-            cur.execute(sql, self._bind_schemas(schemas))
+            self._run(cur, sql, self._bind_schemas(schemas))
             for row in cur:
                 owner, obj_name, obj_type, status = row
                 procedures.append(ProcedureNode(
@@ -748,7 +770,7 @@ class OracleMetadataExtractor:
         binds = self._bind_schemas(schemas)
         with conn.cursor() as cur:
             try:
-                cur.execute(sql, binds)
+                self._run(cur, sql, binds)
                 for row in cur:
                     owner, syn_name, tgt_owner, tgt_obj = row
                     if tgt_owner and tgt_obj:
@@ -787,7 +809,7 @@ class OracleMetadataExtractor:
         sequences: List[SequenceNode] = []
         with conn.cursor() as cur:
             try:
-                cur.execute(sql, self._bind_schemas(schemas))
+                self._run(cur, sql, self._bind_schemas(schemas))
                 for row in cur:
                     owner, seq_name, min_v, max_v, inc, cache = row
                     sequences.append(SequenceNode(
@@ -828,7 +850,7 @@ class OracleMetadataExtractor:
         result: Dict[str, List[Dict[str, str]]] = {}
         with conn.cursor() as cur:
             try:
-                cur.execute(sql, self._bind_schemas(schemas))
+                self._run(cur, sql, self._bind_schemas(schemas))
                 for row in cur:
                     owner, view_name, ref_owner, ref_table, ref_type = row
                     view_fqn = f"{owner.upper()}.{view_name.upper()}"
@@ -898,7 +920,7 @@ class OracleMetadataExtractor:
             )
             try:
                 with conn.cursor() as cur:
-                    cur.execute(sql)
+                    self._run(cur, sql)
                     col_names = [d[0] for d in cur.description]
                     rows = []
                     for row in cur.fetchall():

@@ -422,3 +422,58 @@ class TestDbaToAllFallback:
         assert OracleMetadataExtractor._is_dba_priv_error(_FakeOraError("ORA-00942: ..."))
         assert OracleMetadataExtractor._is_dba_priv_error(_FakeOraError("ORA-01031: ..."))
         assert not OracleMetadataExtractor._is_dba_priv_error(_FakeOraError("ORA-12345: ..."))
+
+
+# ---------------------------------------------------------------------------
+# Query failure logging (SQL + binds visible in error log)
+# ---------------------------------------------------------------------------
+
+class TestQueryFailureLogging:
+    def _extractor(self):
+        config = OracleConfig(dsn="x", user="u", password="p", target_schemas=["KYC"])
+        return OracleMetadataExtractor(config)
+
+    def test_run_logs_sql_and_binds_then_reraises(self, caplog):
+        import logging
+        extractor = self._extractor()
+        cur = MagicMock()
+        cur.execute.side_effect = _FakeOraError("ORA-00942: table or view does not exist")
+
+        with caplog.at_level(logging.ERROR, logger="knowledge_graph.oracle_extractor"):
+            with pytest.raises(_FakeOraError):
+                extractor._run(cur, "SELECT * FROM DBA_TABLES WHERE owner = :s0",
+                               {"s0": "KYC"})
+
+        joined = "\n".join(r.message for r in caplog.records)
+        assert "Oracle query failed" in joined
+        assert "ORA-00942" in joined
+        assert "DBA_TABLES" in joined
+        assert "'s0': 'KYC'" in joined  # binds rendered
+
+    def test_run_passes_through_when_no_error(self):
+        extractor = self._extractor()
+        cur = MagicMock()
+        extractor._run(cur, "SELECT 1 FROM DUAL")
+        cur.execute.assert_called_once_with("SELECT 1 FROM DUAL")
+
+    def test_run_with_binds_calls_execute_with_binds(self):
+        extractor = self._extractor()
+        cur = MagicMock()
+        extractor._run(cur, "SELECT 1 FROM DUAL WHERE 1 = :x", {"x": 1})
+        cur.execute.assert_called_once_with(
+            "SELECT 1 FROM DUAL WHERE 1 = :x", {"x": 1}
+        )
+
+    def test_run_truncates_very_long_sql_in_log(self, caplog):
+        import logging
+        extractor = self._extractor()
+        cur = MagicMock()
+        cur.execute.side_effect = _FakeOraError("ORA-00942: ...")
+        long_sql = "SELECT " + ", ".join(f"col_{i}" for i in range(500)) + " FROM T"
+
+        with caplog.at_level(logging.ERROR, logger="knowledge_graph.oracle_extractor"):
+            with pytest.raises(_FakeOraError):
+                extractor._run(cur, long_sql)
+
+        joined = "\n".join(r.message for r in caplog.records)
+        assert "[truncated]" in joined
