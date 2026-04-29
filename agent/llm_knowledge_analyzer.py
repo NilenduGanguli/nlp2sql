@@ -95,20 +95,17 @@ def _parse_llm_json(raw: str) -> Any:
         return _parse_json_robust(raw)
     except ImportError:
         pass
-    # Inline fallback
+    # Inline fallback — same raw_decode strategy as _parse_json_robust
     raw = re.sub(r"<thinking>[\s\S]*?</thinking>", "", raw, flags=re.IGNORECASE)
     fence_match = re.search(r"```(?:json)?\s*([\s\S]*?)```", raw, re.IGNORECASE)
     candidate = fence_match.group(1).strip() if fence_match else raw
-    # Find outermost array or object
-    arr_match = re.search(r"\[[\s\S]*\]", candidate)
-    if arr_match:
-        cleaned = re.sub(r",\s*([\]}])", r"\1", arr_match.group())
-        return json.loads(cleaned)
-    obj_match = re.search(r"\{[\s\S]*\}", candidate)
-    if obj_match:
-        cleaned = re.sub(r",\s*([\]}])", r"\1", obj_match.group())
-        return json.loads(cleaned)
-    raise ValueError("No JSON found in LLM response")
+    first_brace = candidate.find("{")
+    first_bracket = candidate.find("[")
+    starts = [i for i in (first_brace, first_bracket) if i >= 0]
+    if not starts:
+        raise ValueError("No JSON found in LLM response")
+    text = re.sub(r",\s*([\]}])", r"\1", candidate[min(starts):])
+    return json.JSONDecoder().raw_decode(text)[0]
 
 
 def _get_cache_dir() -> str:

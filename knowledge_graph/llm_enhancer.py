@@ -45,11 +45,15 @@ _FK_COLUMN_SUFFIXES = ("_ID", "_CODE", "_KEY", "_FK", "_NUM", "_NO", "_REF")
 
 def _parse_json_robust(content: str) -> Any:
     """
-    Extract and parse a JSON object from an LLM response, tolerating:
+    Extract and parse a JSON object/array from an LLM response, tolerating:
     - <thinking>...</thinking> blocks (Gemini 2.5 Pro with thinking budget > 0)
     - Markdown code fences (```json ... ```)
     - Trailing commas before ] or } (common LLM formatting mistake)
-    - Prose before/after the JSON object
+    - Prose before/after the JSON
+    - Multiple JSON documents back-to-back (Gemini 2.0 Flash sometimes emits these)
+
+    Uses JSONDecoder.raw_decode() to parse the FIRST complete document and
+    ignore any trailing content, avoiding "Extra data" errors.
     """
     # 1. Strip thinking tags emitted by Gemini 2.5 Pro
     content = re.sub(r"<thinking>[\s\S]*?</thinking>", "", content, flags=re.IGNORECASE)
@@ -58,24 +62,28 @@ def _parse_json_robust(content: str) -> Any:
     fence_match = re.search(r"```(?:json)?\s*([\s\S]*?)```", content, re.IGNORECASE)
     candidate = fence_match.group(1).strip() if fence_match else content
 
-    # 3. Find the outermost JSON object boundaries
-    obj_match = re.search(r"\{[\s\S]*\}", candidate)
-    if not obj_match:
-        raise ValueError("No JSON object found in LLM response")
-    raw = obj_match.group()
+    # 3. Locate the start of the first JSON value (object or array)
+    first_brace = candidate.find("{")
+    first_bracket = candidate.find("[")
+    starts = [i for i in (first_brace, first_bracket) if i >= 0]
+    if not starts:
+        raise ValueError("No JSON object or array found in LLM response")
+    text = candidate[min(starts):]
 
     # 4. Remove trailing commas before } or ] (e.g. [...,] or {...,})
-    raw = re.sub(r",\s*([\]}])", r"\1", raw)
+    text = re.sub(r",\s*([\]}])", r"\1", text)
 
-    # 5. Parse — let JSONDecodeError propagate with the cleaned text for debugging
+    # 5. raw_decode: parse one complete document, ignore trailing content
+    decoder = json.JSONDecoder()
     try:
-        return json.loads(raw)
+        result, _end = decoder.raw_decode(text)
+        return result
     except json.JSONDecodeError as exc:
-        # Last-ditch: try the original candidate (sometimes the regex trims valid JSON)
+        # Last-ditch: try plain json.loads on the cleaned candidate
         try:
             return json.loads(re.sub(r",\s*([\]}])", r"\1", candidate))
         except json.JSONDecodeError:
-            raise exc  # raise the original error with position info
+            raise exc
 
 
 # ---------------------------------------------------------------------------
