@@ -310,3 +310,115 @@ class TestSQLHelpers:
         extractor = OracleMetadataExtractor(config)
         binds = extractor._bind_schemas(["KYC", "FINANCE"])
         assert binds == {"s0": "KYC", "s1": "FINANCE"}
+
+
+# ---------------------------------------------------------------------------
+# DBA → ALL automatic fallback (ORA-00942 / ORA-01031)
+# ---------------------------------------------------------------------------
+
+class _FakeOraError(Exception):
+    """Stand-in for oracledb.DatabaseError carrying an ORA- code in str()."""
+
+
+class TestDbaToAllFallback:
+    def _extractor(self, *, use_dba=True):
+        config = OracleConfig(
+            dsn="x", user="u", password="p",
+            target_schemas=["KYC"], use_dba_views=use_dba,
+        )
+        return OracleMetadataExtractor(config)
+
+    def test_safe_extract_flips_prefix_and_retries_on_ora_00942(self):
+        extractor = self._extractor()
+        assert extractor._prefix == "DBA"
+
+        calls = {"n": 0}
+
+        def fake_fn():
+            calls["n"] += 1
+            if extractor._prefix == "DBA":
+                raise _FakeOraError("ORA-00942: table or view does not exist")
+            return ["ok-from-ALL"]
+
+        result = extractor._safe_extract("tables", fake_fn, default=[])
+        assert result == ["ok-from-ALL"]
+        assert extractor._prefix == "ALL"  # permanently flipped
+        assert calls["n"] == 2  # original + retry
+
+    def test_safe_extract_handles_ora_01031(self):
+        extractor = self._extractor()
+
+        def fake_fn():
+            if extractor._prefix == "DBA":
+                raise _FakeOraError("ORA-01031: insufficient privileges")
+            return [42]
+
+        assert extractor._safe_extract("indexes", fake_fn, default=[]) == [42]
+        assert extractor._prefix == "ALL"
+
+    def test_safe_extract_does_not_retry_on_other_errors(self):
+        extractor = self._extractor()
+
+        def fake_fn():
+            raise _FakeOraError("ORA-12345: some other error")
+
+        result = extractor._safe_extract("columns", fake_fn, default=[])
+        assert result == []
+        assert extractor._prefix == "DBA"  # not flipped
+
+    def test_safe_extract_returns_default_when_retry_also_fails(self):
+        extractor = self._extractor()
+
+        def fake_fn():
+            raise _FakeOraError("ORA-00942: still missing")
+
+        result = extractor._safe_extract("constraints", fake_fn, default=[])
+        assert result == []
+        assert extractor._prefix == "ALL"  # flipped on first failure
+
+    def test_safe_extract_no_flip_when_already_all(self):
+        extractor = self._extractor(use_dba=False)
+        assert extractor._prefix == "ALL"
+
+        def fake_fn():
+            raise _FakeOraError("ORA-00942: still missing")
+
+        result = extractor._safe_extract("constraints", fake_fn, default=[])
+        assert result == []
+        assert extractor._prefix == "ALL"
+
+    def test_resolve_schemas_with_fallback_flips_on_ora_00942(self):
+        extractor = self._extractor()
+        # No target_schemas → discovery query; must hit Oracle
+        extractor.config.target_schemas = []
+
+        attempts = {"n": 0}
+
+        def fake_resolve(_conn):
+            attempts["n"] += 1
+            if extractor._prefix == "DBA":
+                raise _FakeOraError("ORA-00942: table or view does not exist")
+            return ["KYC", "FINANCE"]
+
+        with patch.object(extractor, "_resolve_schemas", side_effect=fake_resolve):
+            result = extractor._resolve_schemas_with_fallback(MagicMock())
+
+        assert result == ["KYC", "FINANCE"]
+        assert extractor._prefix == "ALL"
+        assert attempts["n"] == 2
+
+    def test_resolve_schemas_with_fallback_reraises_unknown_errors(self):
+        extractor = self._extractor()
+
+        def fake_resolve(_conn):
+            raise _FakeOraError("ORA-12345: unrelated")
+
+        with patch.object(extractor, "_resolve_schemas", side_effect=fake_resolve):
+            with pytest.raises(_FakeOraError):
+                extractor._resolve_schemas_with_fallback(MagicMock())
+        assert extractor._prefix == "DBA"
+
+    def test_is_dba_priv_error_recognises_codes(self):
+        assert OracleMetadataExtractor._is_dba_priv_error(_FakeOraError("ORA-00942: ..."))
+        assert OracleMetadataExtractor._is_dba_priv_error(_FakeOraError("ORA-01031: ..."))
+        assert not OracleMetadataExtractor._is_dba_priv_error(_FakeOraError("ORA-12345: ..."))

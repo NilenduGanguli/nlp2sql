@@ -176,12 +176,12 @@ class OracleMetadataExtractor:
         meta = OracleMetadata()
 
         try:
-            schemas = self._resolve_schemas(conn)
+            schemas = self._resolve_schemas_with_fallback(conn)
         except Exception as exc:
             logger.error("Failed to resolve schemas — aborting extraction: %s", exc)
             return meta
 
-        logger.info("Extracting from schemas: %s", schemas)
+        logger.info("Extracting from schemas: %s (view_prefix=%s)", schemas, self._prefix)
         meta.schemas = [SchemaNode(name=s) for s in schemas]
 
         meta.tables = self._safe_extract("tables", self._extract_tables, conn, schemas, default=[])
@@ -208,16 +208,55 @@ class OracleMetadataExtractor:
         return meta
 
     def _safe_extract(self, label: str, fn, *args, default):
-        """Call fn(*args); on any exception log a warning and return default."""
+        """Call fn(*args); on ORA-00942 (DBA_* not visible) permanently flip
+        the view prefix from DBA→ALL and retry once before giving up.
+        """
         try:
             return fn(*args)
         except Exception as exc:
+            if self._is_dba_priv_error(exc) and self._prefix == "DBA":
+                logger.warning(
+                    "%s: DBA_* views not accessible (%s). Falling back to ALL_* "
+                    "for the rest of this extraction.",
+                    label, self._first_error_line(exc),
+                )
+                self._prefix = "ALL"
+                try:
+                    return fn(*args)
+                except Exception as exc2:
+                    logger.warning("Skipping %s after ALL_* retry: %s", label, exc2)
+                    return default
             logger.warning("Skipping %s extraction due to error: %s", label, exc)
             return default
+
+    @staticmethod
+    def _is_dba_priv_error(exc: Exception) -> bool:
+        """ORA-00942 = table/view does not exist (or no SELECT privilege)."""
+        msg = str(exc)
+        return "ORA-00942" in msg or "ORA-01031" in msg  # 01031 = insufficient privs
+
+    @staticmethod
+    def _first_error_line(exc: Exception) -> str:
+        return str(exc).strip().splitlines()[0] if str(exc).strip() else repr(exc)
 
     # ------------------------------------------------------------------
     # Schema resolution
     # ------------------------------------------------------------------
+
+    def _resolve_schemas_with_fallback(self, conn: oracledb.Connection) -> List[str]:
+        """Resolve schemas, downgrading DBA_*→ALL_* on permission errors."""
+        try:
+            return self._resolve_schemas(conn)
+        except Exception as exc:
+            if self._is_dba_priv_error(exc) and self._prefix == "DBA":
+                logger.warning(
+                    "Schema resolution: DBA_TABLES not accessible (%s). "
+                    "Falling back to ALL_* for the rest of this extraction.",
+                    self._first_error_line(exc),
+                )
+                self._prefix = "ALL"
+                return self._resolve_schemas(conn)
+            raise
 
     def _resolve_schemas(self, conn: oracledb.Connection) -> List[str]:
         """Return the list of schema names to introspect."""
