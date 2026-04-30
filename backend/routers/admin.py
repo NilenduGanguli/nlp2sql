@@ -63,7 +63,7 @@ async def rebuild_graph(request: Request, config=Depends(get_config)):
             from agent.pipeline import build_pipeline
 
             # Build graph in thread (blocking Oracle I/O)
-            graph, report = await anyio.to_thread.run_sync(
+            graph, report, _value_cache = await anyio.to_thread.run_sync(
                 lambda: initialize_graph(config.graph)
             )
             app.state.graph = graph

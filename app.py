@@ -262,7 +262,7 @@ def get_knowledge_graph(_config_hash: str) -> "_GraphBundle":
         return _GraphBundle(graph, llm_enhanced)
 
     # 2. Cache miss — build from Oracle
-    graph, report = initialize_graph(config.graph)
+    graph, report, _value_cache = initialize_graph(config.graph)
     if report.get("success"):
         save_graph(graph, cache_path, llm_enhanced=False)
         return _GraphBundle(graph, False)

@@ -152,3 +152,27 @@ def test_probe_filter_candidates_records_error(kyc_graph, graph_config):
     assert entry is not None
     assert entry.error is not None
     assert entry.values == []
+
+
+# ---------------------------------------------------------------------------
+# initialize_graph integration
+# ---------------------------------------------------------------------------
+
+def test_initialize_graph_returns_tuple_with_value_cache():
+    """Smoke test: initialize_graph returns (graph, report, value_cache)."""
+    from knowledge_graph.config import GraphConfig, OracleConfig
+    from knowledge_graph.init_graph import initialize_graph
+    from knowledge_graph.value_cache import ValueCache
+
+    # Force early-exit via failed connectivity check — we only assert the shape.
+    with patch("knowledge_graph.init_graph.OracleMetadataExtractor") as cls:
+        cls.return_value.check_connectivity.return_value = False
+        cfg = GraphConfig(oracle=OracleConfig(
+            dsn="x", user="y", password="z", target_schemas=["KYC"],
+        ))
+        result = initialize_graph(cfg)
+
+    assert isinstance(result, tuple)
+    assert len(result) == 3
+    _graph, _report, value_cache = result
+    assert isinstance(value_cache, ValueCache)

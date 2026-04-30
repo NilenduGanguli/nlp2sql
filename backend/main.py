@@ -75,7 +75,7 @@ def _load_or_build_graph(config: AppConfig) -> _GraphBundle:
 
     # Build from Oracle
     logger.info("Cache miss — building graph from Oracle…")
-    graph, report = initialize_graph(config.graph)
+    graph, report, _value_cache = initialize_graph(config.graph)
     if report.get("success"):
         save_graph(graph, cache_path, llm_enhanced=False)
         logger.info("Graph built and cached (%d tables)", graph.count_nodes("Table"))
