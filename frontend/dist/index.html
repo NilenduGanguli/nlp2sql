@@ -5,6 +5,35 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>KnowledgeQL — NLP to SQL</title>
     <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext y='.9em' font-size='90'%3E🔍%3C/text%3E%3C/svg%3E" />
+    <script>
+      // crypto.randomUUID polyfill — only available in secure contexts (HTTPS/localhost).
+      // On corporate VMs accessed over plain HTTP it is undefined, so libraries that
+      // call it at module-init time (zustand, react-query) crash before the app mounts.
+      (function () {
+        var g = (typeof globalThis !== 'undefined') ? globalThis : window;
+        if (!g.crypto) g.crypto = {};
+        if (typeof g.crypto.randomUUID !== 'function') {
+          g.crypto.randomUUID = function () {
+            // Prefer cryptographically strong randomness if getRandomValues is present
+            // (it works in non-secure contexts too).
+            if (typeof g.crypto.getRandomValues === 'function') {
+              var b = new Uint8Array(16);
+              g.crypto.getRandomValues(b);
+              b[6] = (b[6] & 0x0f) | 0x40; // version 4
+              b[8] = (b[8] & 0x3f) | 0x80; // RFC 4122 variant
+              var h = [];
+              for (var i = 0; i < 16; i++) h.push((b[i] + 0x100).toString(16).slice(1));
+              return h[0]+h[1]+h[2]+h[3]+'-'+h[4]+h[5]+'-'+h[6]+h[7]+'-'+h[8]+h[9]+'-'+h[10]+h[11]+h[12]+h[13]+h[14]+h[15];
+            }
+            // Last resort — Math.random (not cryptographic, but unblocks the UI).
+            return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function (c) {
+              var r = (Math.random() * 16) | 0;
+              return (c === 'x' ? r : (r & 0x3) | 0x8).toString(16);
+            });
+          };
+        }
+      })();
+    </script>
     <script type="module" crossorigin src="/assets/index-CJgSu2bA.js"></script>
     <link rel="modulepreload" crossorigin href="/assets/query-CMlzJ--y.js">
     <link rel="modulepreload" crossorigin href="/assets/ag-grid-DbIl7KAy.js">
