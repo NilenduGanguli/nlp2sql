@@ -84,3 +84,71 @@ def test_mark_filter_candidates_heuristic_idempotent(kyc_graph):
     n1 = mark_filter_candidates_heuristic(kyc_graph)
     n2 = mark_filter_candidates_heuristic(kyc_graph)
     assert n1 == n2
+
+
+# ---------------------------------------------------------------------------
+# DISTINCT probe pass
+# ---------------------------------------------------------------------------
+
+from knowledge_graph.value_cache import ValueCache
+from knowledge_graph.value_cache_builder import probe_filter_candidates
+
+
+class _FakeCursor:
+    def __init__(self, rows):
+        self._rows = rows
+    def execute(self, sql, *args, **kwargs):
+        self._executed = sql
+        return self
+    def fetchall(self):
+        return self._rows
+
+
+class _FakeConn:
+    def __init__(self, rows):
+        self._rows = rows
+        self.callTimeout = None
+    def cursor(self):
+        return _FakeCursor(self._rows)
+    def close(self):
+        pass
+
+
+def test_probe_filter_candidates_populates_cache(kyc_graph, graph_config):
+    mark_filter_candidates_heuristic(kyc_graph)
+    fake_conn = _FakeConn([("ACTIVE",), ("DORMANT",), ("CLOSED",)])
+    with patch("knowledge_graph.value_cache_builder.oracledb") as mock_oracledb:
+        mock_oracledb.connect.return_value = fake_conn
+        cache = probe_filter_candidates(kyc_graph, graph_config, max_workers=2)
+
+    assert len(cache) > 0
+    entry = cache.get("KYC", "ACCOUNTS", "STATUS")
+    assert entry is not None
+    assert entry.values == ["ACTIVE", "DORMANT", "CLOSED"]
+    assert entry.too_many is False
+    assert entry.error is None
+
+
+def test_probe_filter_candidates_marks_too_many(kyc_graph, graph_config):
+    mark_filter_candidates_heuristic(kyc_graph)
+    fake_conn = _FakeConn([(f"V{i}",) for i in range(31)])
+    with patch("knowledge_graph.value_cache_builder.oracledb") as mock_oracledb:
+        mock_oracledb.connect.return_value = fake_conn
+        cache = probe_filter_candidates(kyc_graph, graph_config, max_workers=2)
+
+    entry = cache.get("KYC", "ACCOUNTS", "STATUS")
+    assert entry is not None
+    assert entry.too_many is True
+    assert entry.values == []
+
+
+def test_probe_filter_candidates_records_error(kyc_graph, graph_config):
+    mark_filter_candidates_heuristic(kyc_graph)
+    with patch("knowledge_graph.value_cache_builder.oracledb") as mock_oracledb:
+        mock_oracledb.connect.side_effect = RuntimeError("ORA-12541: TNS no listener")
+        cache = probe_filter_candidates(kyc_graph, graph_config, max_workers=2)
+
+    entry = cache.get("KYC", "ACCOUNTS", "STATUS")
+    assert entry is not None
+    assert entry.error is not None
+    assert entry.values == []
