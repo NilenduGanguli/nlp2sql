@@ -231,11 +231,12 @@ class _GraphBundle:
     set ``bundle.llm_enhanced = True`` once and have every subsequent session see
     the updated value — preventing repeated, expensive LLM calls on each new tab.
     """
-    __slots__ = ("graph", "llm_enhanced")
+    __slots__ = ("graph", "llm_enhanced", "value_cache")
 
-    def __init__(self, graph, llm_enhanced: bool = False) -> None:
+    def __init__(self, graph, llm_enhanced: bool = False, value_cache=None) -> None:
         self.graph = graph
         self.llm_enhanced = llm_enhanced
+        self.value_cache = value_cache
 
 
 @st.cache_resource(show_spinner="Building knowledge graph...")
@@ -247,6 +248,12 @@ def get_knowledge_graph(_config_hash: str) -> "_GraphBundle":
       2. Live Oracle build via ``initialize_graph()``
     """
     from knowledge_graph.graph_cache import get_cache_path, load_graph, save_graph
+    from knowledge_graph.value_cache import (
+        get_value_cache_path,
+        load_value_cache,
+        save_value_cache,
+    )
+    from knowledge_graph.column_value_cache import set_loaded_value_cache
     from knowledge_graph.init_graph import initialize_graph
     from app_config import AppConfig
 
@@ -254,18 +261,25 @@ def get_knowledge_graph(_config_hash: str) -> "_GraphBundle":
 
     ttl_hours = float(os.getenv("GRAPH_CACHE_TTL_HOURS", "0"))
     cache_path = get_cache_path(config)
+    value_cache_path = get_value_cache_path(config)
 
     # 1. Try loading from disk cache
     cached = load_graph(cache_path, max_age_hours=ttl_hours)
     if cached is not None:
         graph, llm_enhanced = cached
-        return _GraphBundle(graph, llm_enhanced)
+        value_cache = load_value_cache(value_cache_path)
+        if value_cache is not None:
+            set_loaded_value_cache(value_cache)
+        return _GraphBundle(graph, llm_enhanced, value_cache)
 
     # 2. Cache miss — build from Oracle
-    graph, report, _value_cache = initialize_graph(config.graph)
+    graph, report, value_cache = initialize_graph(config.graph)
     if report.get("success"):
         save_graph(graph, cache_path, llm_enhanced=False)
-        return _GraphBundle(graph, False)
+        if value_cache is not None and len(value_cache) > 0:
+            save_value_cache(value_cache, value_cache_path)
+            set_loaded_value_cache(value_cache)
+        return _GraphBundle(graph, False, value_cache)
 
     raise RuntimeError(
         "Knowledge graph initialisation failed — check Oracle connection and app logs."

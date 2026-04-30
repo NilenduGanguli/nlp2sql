@@ -51,6 +51,20 @@ _FLAG_PREFIXES = ("IS_", "HAS_", "CAN_", "ALLOW_", "ENABLE_")
 # In-process cache: (SCHEMA, TABLE, COLUMN) → list of string values (or [] = skip)
 _cache: Dict[Tuple[str, str, str], List[str]] = {}
 
+# Disk-loaded value cache, set once at app/process start. None means
+# "no Phase 1 cache available — fall back to live Oracle probe".
+_loaded_cache = None
+
+
+def set_loaded_value_cache(cache) -> None:
+    """Inject the disk-loaded ValueCache so lookups hit it before Oracle.
+
+    Wired in Task 8 — for now the function only stores the reference; the
+    actual lookup integration into ``get_distinct_values`` happens there.
+    """
+    global _loaded_cache
+    _loaded_cache = cache
+
 
 def is_likely_enum_column(
     column_name: str,
