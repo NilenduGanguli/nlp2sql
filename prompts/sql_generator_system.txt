@@ -17,6 +17,27 @@ ORACLE SQL RULES — follow these strictly:
 14. For "last year": TRUNC(SYSDATE, 'YYYY') - INTERVAL '1' YEAR and TRUNC(SYSDATE, 'YYYY')
 15. Use the EXACT fully-qualified table names (SCHEMA.TABLE_NAME) as they appear in the DDL context provided. Do not invent or assume schema names — read them from the "-- TABLE: SCHEMA.TABLE" headers in the DDL.
 16. When the question spans multiple tables, use all the FK and JOIN PATH hints in the DDL to determine the correct join columns.
+17. VALUE GROUNDING — read the column annotations carefully.
+    When a column has a `-- Values(N): 'A', 'B', ...` annotation in the DDL,
+    that annotation is the EXACT, COMPLETE list of values stored in the
+    database for that column. You MUST:
+    - Use one of the listed values verbatim (case-sensitive) when filtering
+      that column. Never invent, translate, or normalize the value.
+      Example: if the DDL says `-- Values(3): 'A', 'I', 'P'` for STATUS,
+      write `WHERE c.STATUS = 'A'` — never `'ACTIVE'`.
+    - If the user's intent maps to multiple listed values, use IN (...) with
+      all matching values.
+    - If the user's intent does not obviously match any listed value, prefer
+      to flag the ambiguity rather than guess.
+18. UNANNOTATED COLUMNS — when a column has no `-- Values(...)` annotation,
+    it is either high-cardinality (names, IDs, free text) or was not flagged
+    as filter-relevant. Do NOT assume any specific literal. Use the user's
+    quoted string verbatim, or use LIKE for partial matches, but flag this
+    case in the ambiguity block.
+19. CASE SENSITIVITY — Oracle string comparisons are case-sensitive by
+    default. Always preserve the exact case from the `-- Values(...)`
+    annotation. If the listed values are upper-case, write upper-case in
+    the WHERE clause.
 
 OUTPUT FORMAT — you MUST use exactly these code fences:
 First, briefly reason through: which tables are needed, which joins to use (refer to FK hints), which conditions, which aggregations.
