@@ -59,8 +59,8 @@ _loaded_cache = None
 def set_loaded_value_cache(cache) -> None:
     """Inject the disk-loaded ValueCache so lookups hit it before Oracle.
 
-    Wired in Task 8 — for now the function only stores the reference; the
-    actual lookup integration into ``get_distinct_values`` happens there.
+    Called once per process from ``app.py`` and the FastAPI lifespan after
+    the cache is loaded from disk (or built from Oracle on first start).
     """
     global _loaded_cache
     _loaded_cache = cache
@@ -117,18 +117,34 @@ def get_distinct_values(
     max_values: int = MAX_DISTINCT_VALUES,
 ) -> List[str]:
     """
-    Return the distinct non-null values for ``schema.table.column``.
+    Return distinct non-null values for ``schema.table.column``.
 
-    Results are cached in process memory on the first successful fetch.
+    Lookup order:
+      1. Disk-loaded ValueCache (populated by Phase 1 at graph build)
+      2. Process-local in-memory cache (lazy probes within this run)
+      3. Live Oracle DISTINCT probe (fallback; result cached in memory)
+
     Returns an empty list when:
-    - the column has more than ``max_values`` distinct values (not an enum)
-    - Oracle is unreachable
-    - any other error occurs
+      - the column has more than ``max_values`` distinct values
+      - the cached entry records a probe error
+      - Oracle is unreachable or a live probe fails
     """
     key = (schema.upper(), table.upper(), column.upper())
+
+    # 1. Disk-loaded cache (Phase 1) — fast path, no Oracle hit.
+    if _loaded_cache is not None:
+        entry = _loaded_cache.get(schema, table, column)
+        if entry is not None:
+            if entry.too_many or entry.error:
+                return []
+            return list(entry.values)
+
+    # 2. Process-local memo — set either by a previous call in this run or by
+    #    invalidate_cache().
     if key in _cache:
         return _cache[key]
 
+    # 3. Live Oracle probe — last resort for columns the disk cache missed.
     try:
         import oracledb  # type: ignore
 
@@ -149,7 +165,6 @@ def get_distinct_values(
         conn.close()
 
         if len(rows) > max_values:
-            # Column is not an enum — too many distinct values; cache as empty to skip
             _cache[key] = []
             return []
 
@@ -166,7 +181,7 @@ def get_distinct_values(
             "column_value_cache: skipping %s.%s.%s — %s",
             schema, table, column, exc,
         )
-        _cache[key] = []  # don't retry on failures
+        _cache[key] = []
         return []
 
 

@@ -53,3 +53,47 @@ def test_is_enum_positive_numeric(name, dtype, length, precision):
 ])
 def test_is_enum_negative(name, dtype, length, precision):
     assert is_likely_enum_column(name, dtype, length, precision) is False
+
+
+# ---------------------------------------------------------------------------
+# Disk-loaded cache integration with get_distinct_values
+# ---------------------------------------------------------------------------
+
+from knowledge_graph.column_value_cache import (
+    get_distinct_values,
+    set_loaded_value_cache,
+    invalidate_cache as invalidate_runtime_cache,
+)
+from knowledge_graph.value_cache import ValueCache, ValueCacheEntry
+
+
+def test_get_distinct_values_prefers_loaded_cache():
+    invalidate_runtime_cache()
+    loaded = ValueCache()
+    loaded.set("KYC", "ACCOUNTS", "STATUS",
+               ValueCacheEntry(values=["ACTIVE", "DORMANT"]))
+    set_loaded_value_cache(loaded)
+
+    # No Oracle import required — we hit the loaded cache.
+    result = get_distinct_values("KYC", "ACCOUNTS", "STATUS", config=None)
+    assert result == ["ACTIVE", "DORMANT"]
+
+
+def test_get_distinct_values_too_many_returns_empty():
+    invalidate_runtime_cache()
+    loaded = ValueCache()
+    loaded.set("KYC", "ACCOUNTS", "BIG_COL",
+               ValueCacheEntry(values=[], too_many=True))
+    set_loaded_value_cache(loaded)
+
+    assert get_distinct_values("KYC", "ACCOUNTS", "BIG_COL", config=None) == []
+
+
+def test_get_distinct_values_error_returns_empty():
+    invalidate_runtime_cache()
+    loaded = ValueCache()
+    loaded.set("KYC", "ACCOUNTS", "ERR_COL",
+               ValueCacheEntry(values=[], error="ORA-00942"))
+    set_loaded_value_cache(loaded)
+
+    assert get_distinct_values("KYC", "ACCOUNTS", "ERR_COL", config=None) == []
