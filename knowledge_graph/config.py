@@ -62,6 +62,37 @@ class OracleConfig:
 
 
 @dataclass
+class ValueCacheConfig:
+    """
+    Configuration for the column-value cache.
+
+    Drives the precomputed distinct-value lookup that grounds SQL WHERE
+    clauses in real database values rather than LLM-inferred guesses.
+    """
+
+    enabled: bool = field(
+        default_factory=lambda: os.getenv("VALUE_CACHE_ENABLED", "true").lower()
+        not in ("false", "0", "no")
+    )
+    max_values: int = field(
+        default_factory=lambda: int(os.getenv("VALUE_CACHE_MAX_VALUES", "30"))
+    )
+    probe_workers: int = field(
+        default_factory=lambda: int(os.getenv("VALUE_CACHE_PROBE_WORKERS", "8"))
+    )
+    probe_timeout_ms: int = field(
+        default_factory=lambda: int(os.getenv("VALUE_CACHE_PROBE_TIMEOUT_MS", "5000"))
+    )
+    llm_nominate: bool = field(
+        default_factory=lambda: os.getenv("VALUE_CACHE_LLM_NOMINATE", "true").lower()
+        not in ("false", "0", "no")
+    )
+    llm_batch_size: int = field(
+        default_factory=lambda: int(os.getenv("VALUE_CACHE_LLM_BATCH_SIZE", "50"))
+    )
+
+
+@dataclass
 class GraphConfig:
     """
     Top-level configuration for the knowledge graph pipeline.
@@ -85,6 +116,8 @@ class GraphConfig:
     similarity_min_score: float = field(
         default_factory=lambda: float(os.getenv("SIMILARITY_MIN_SCORE", "0.75"))
     )
+    # Column-value cache (Phase 1 of value-grounded WHERE clauses)
+    value_cache: ValueCacheConfig = field(default_factory=ValueCacheConfig)
 
     def validate(self) -> None:
         self.oracle.validate()
