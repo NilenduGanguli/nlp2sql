@@ -90,6 +90,17 @@ class ValueCacheConfig:
     llm_batch_size: int = field(
         default_factory=lambda: int(os.getenv("VALUE_CACHE_LLM_BATCH_SIZE", "50"))
     )
+    # Phase 2 — Layer 3 literal validator knobs
+    validator_enabled: bool = field(
+        default_factory=lambda: os.getenv("VALUE_VALIDATOR_ENABLED", "true").lower()
+        not in ("false", "0", "no")
+    )
+    fuzzy_threshold: float = field(
+        default_factory=lambda: float(os.getenv("VALUE_VALIDATOR_FUZZY_THRESHOLD", "0.85"))
+    )
+    validator_max_retries: int = field(
+        default_factory=lambda: int(os.getenv("VALUE_VALIDATOR_MAX_RETRIES", "1"))
+    )
 
 
 @dataclass

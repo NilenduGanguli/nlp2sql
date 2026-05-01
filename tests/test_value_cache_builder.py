@@ -17,6 +17,20 @@ def test_value_cache_config_defaults_match_design():
     assert cfg.probe_timeout_ms == 5000
     assert cfg.llm_nominate is True
     assert cfg.llm_batch_size == 50
+    # Phase 2 — literal validator knobs
+    assert cfg.validator_enabled is True
+    assert cfg.fuzzy_threshold == 0.85
+    assert cfg.validator_max_retries == 1
+
+
+def test_value_cache_config_validator_env_overrides(monkeypatch):
+    monkeypatch.setenv("VALUE_VALIDATOR_ENABLED", "false")
+    monkeypatch.setenv("VALUE_VALIDATOR_FUZZY_THRESHOLD", "0.7")
+    monkeypatch.setenv("VALUE_VALIDATOR_MAX_RETRIES", "2")
+    cfg = ValueCacheConfig()
+    assert cfg.validator_enabled is False
+    assert cfg.fuzzy_threshold == 0.7
+    assert cfg.validator_max_retries == 2
 
 
 def test_value_cache_config_reads_env(monkeypatch):
