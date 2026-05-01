@@ -422,6 +422,65 @@ def render_sidebar() -> None:
                 st.info("Graph cache cleared — rebuilding from Oracle on next load.")
                 st.rerun()
 
+            # ── Value-cache status + targeted rebuild ─────────────────────────
+            try:
+                from knowledge_graph.value_cache import (
+                    get_value_cache_path,
+                    invalidate_value_cache,
+                )
+                from knowledge_graph.column_value_cache import _loaded_cache
+                _vc_path = get_value_cache_path(config)
+                _vc_exists = os.path.exists(_vc_path)
+                _vc_stats = _loaded_cache.stats() if _loaded_cache is not None else None
+
+                if _vc_stats is not None:
+                    st.caption(
+                        f"Value cache: {_vc_stats['ok']} ok · "
+                        f"{_vc_stats['too_many']} too-many · "
+                        f"{_vc_stats['errors']} err  "
+                        f"(total {_vc_stats['total']})"
+                    )
+                elif _vc_exists:
+                    st.caption("Value cache on disk (not yet loaded into this session).")
+                else:
+                    st.caption("No value cache yet — built on next graph rebuild.")
+
+                if st.button("Rebuild Value Cache", use_container_width=True,
+                             help="Re-probe DISTINCT values from Oracle without rebuilding the graph."):
+                    bundle = st.session_state.get("graph") or get_knowledge_graph()
+                    graph_obj = getattr(bundle, "graph", bundle)
+                    try:
+                        from knowledge_graph.value_cache_builder import (
+                            mark_filter_candidates_heuristic,
+                            probe_filter_candidates,
+                        )
+                        from knowledge_graph.value_cache import save_value_cache
+                        from knowledge_graph.column_value_cache import set_loaded_value_cache
+                        with st.spinner("Re-probing distinct values from Oracle…"):
+                            mark_filter_candidates_heuristic(graph_obj)
+                            new_cache = probe_filter_candidates(
+                                graph_obj, config.graph,
+                                max_workers=getattr(
+                                    config.graph.value_cache, "probe_workers", 8,
+                                ),
+                            )
+                            invalidate_value_cache(_vc_path)
+                            save_value_cache(new_cache, _vc_path)
+                            set_loaded_value_cache(new_cache)
+                            if hasattr(bundle, "value_cache"):
+                                bundle.value_cache = new_cache
+                        s = new_cache.stats()
+                        st.success(
+                            f"Value cache rebuilt — {s['ok']} ok, "
+                            f"{s['too_many']} too-many, {s['errors']} err."
+                        )
+                        st.rerun()
+                    except Exception as exc:
+                        st.error(f"Value cache rebuild failed: {exc}")
+            except Exception as _vc_exc:
+                # Best-effort UI — never break the sidebar on a Phase 1 import error.
+                logger.debug("Value cache panel unavailable: %s", _vc_exc)
+
         # ------------------------------------------------------ Schema Explorer
         st.markdown(
             "<div class='sidebar-section-header'>Schema Explorer</div>",
@@ -613,6 +672,25 @@ def _render_assistant_message(content: str, result: Optional[Dict[str, Any]]) ->
                     st.rerun()
             if explanation:
                 st.caption(f"Explanation: {explanation}")
+
+    # Value mappings — auto-fixes applied by the literal validator (Phase 2)
+    value_mappings = result.get("value_mappings") or []
+    if value_mappings:
+        with st.expander(
+            f"Value mappings ({len(value_mappings)} auto-fixed)",
+            expanded=False,
+        ):
+            st.caption(
+                "These literals didn't match real DB values exactly, so the "
+                "validator rewrote them to the closest cached value before "
+                "execution. The original SQL the LLM produced is also shown."
+            )
+            for m in value_mappings:
+                col_label = f"`{m.get('table', '')}.{m.get('column', '')}`"
+                st.markdown(
+                    f"- {col_label}: `'{m.get('original', '')}'` → "
+                    f"`'{m.get('mapped', '')}'`  *({m.get('reason', '')})*"
+                )
 
     # Metrics row
     if total_rows > 0 or source:
