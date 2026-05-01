@@ -109,6 +109,16 @@ export type QueryStep =
   | 'auto_clarifying'
   | 'presenting'
 
+// One literal that the SQL validator silently rewrote so the WHERE clause
+// would match a real DB value (Phase 2 / Layer 3).
+export interface ValueMapping {
+  table: string       // 'SCHEMA.TABLE'
+  column: string      // 'STATUS'
+  original: string    // literal as the LLM wrote it (e.g. 'active')
+  mapped: string      // value the validator swapped in (e.g. 'A')
+  reason: string      // human-readable rule that produced the match
+}
+
 export interface QueryResult {
   type: string
   summary: string
@@ -121,6 +131,7 @@ export interface QueryResult {
   data_source: string
   schema_context_tables: string[]
   validation_errors: string[]
+  value_mappings?: ValueMapping[]
 }
 
 export type ChatMessageType = 'user' | 'result' | 'error' | 'clarification' | 'sql_preview' | 'sql_candidates' | 'kyc_auto_answer'

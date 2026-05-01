@@ -231,11 +231,12 @@ class _GraphBundle:
     set ``bundle.llm_enhanced = True`` once and have every subsequent session see
     the updated value — preventing repeated, expensive LLM calls on each new tab.
     """
-    __slots__ = ("graph", "llm_enhanced")
+    __slots__ = ("graph", "llm_enhanced", "value_cache")
 
-    def __init__(self, graph, llm_enhanced: bool = False) -> None:
+    def __init__(self, graph, llm_enhanced: bool = False, value_cache=None) -> None:
         self.graph = graph
         self.llm_enhanced = llm_enhanced
+        self.value_cache = value_cache
 
 
 @st.cache_resource(show_spinner="Building knowledge graph...")
@@ -247,6 +248,12 @@ def get_knowledge_graph(_config_hash: str) -> "_GraphBundle":
       2. Live Oracle build via ``initialize_graph()``
     """
     from knowledge_graph.graph_cache import get_cache_path, load_graph, save_graph
+    from knowledge_graph.value_cache import (
+        get_value_cache_path,
+        load_value_cache,
+        save_value_cache,
+    )
+    from knowledge_graph.column_value_cache import set_loaded_value_cache
     from knowledge_graph.init_graph import initialize_graph
     from app_config import AppConfig
 
@@ -254,18 +261,25 @@ def get_knowledge_graph(_config_hash: str) -> "_GraphBundle":
 
     ttl_hours = float(os.getenv("GRAPH_CACHE_TTL_HOURS", "0"))
     cache_path = get_cache_path(config)
+    value_cache_path = get_value_cache_path(config)
 
     # 1. Try loading from disk cache
     cached = load_graph(cache_path, max_age_hours=ttl_hours)
     if cached is not None:
         graph, llm_enhanced = cached
-        return _GraphBundle(graph, llm_enhanced)
+        value_cache = load_value_cache(value_cache_path)
+        if value_cache is not None:
+            set_loaded_value_cache(value_cache)
+        return _GraphBundle(graph, llm_enhanced, value_cache)
 
     # 2. Cache miss — build from Oracle
-    graph, report = initialize_graph(config.graph)
+    graph, report, value_cache = initialize_graph(config.graph)
     if report.get("success"):
         save_graph(graph, cache_path, llm_enhanced=False)
-        return _GraphBundle(graph, False)
+        if value_cache is not None and len(value_cache) > 0:
+            save_value_cache(value_cache, value_cache_path)
+            set_loaded_value_cache(value_cache)
+        return _GraphBundle(graph, False, value_cache)
 
     raise RuntimeError(
         "Knowledge graph initialisation failed — check Oracle connection and app logs."
@@ -407,6 +421,65 @@ def render_sidebar() -> None:
                 st.session_state.graph_llm_enhanced = False
                 st.info("Graph cache cleared — rebuilding from Oracle on next load.")
                 st.rerun()
+
+            # ── Value-cache status + targeted rebuild ─────────────────────────
+            try:
+                from knowledge_graph.value_cache import (
+                    get_value_cache_path,
+                    invalidate_value_cache,
+                )
+                from knowledge_graph.column_value_cache import _loaded_cache
+                _vc_path = get_value_cache_path(config)
+                _vc_exists = os.path.exists(_vc_path)
+                _vc_stats = _loaded_cache.stats() if _loaded_cache is not None else None
+
+                if _vc_stats is not None:
+                    st.caption(
+                        f"Value cache: {_vc_stats['ok']} ok · "
+                        f"{_vc_stats['too_many']} too-many · "
+                        f"{_vc_stats['errors']} err  "
+                        f"(total {_vc_stats['total']})"
+                    )
+                elif _vc_exists:
+                    st.caption("Value cache on disk (not yet loaded into this session).")
+                else:
+                    st.caption("No value cache yet — built on next graph rebuild.")
+
+                if st.button("Rebuild Value Cache", use_container_width=True,
+                             help="Re-probe DISTINCT values from Oracle without rebuilding the graph."):
+                    bundle = st.session_state.get("graph") or get_knowledge_graph()
+                    graph_obj = getattr(bundle, "graph", bundle)
+                    try:
+                        from knowledge_graph.value_cache_builder import (
+                            mark_filter_candidates_heuristic,
+                            probe_filter_candidates,
+                        )
+                        from knowledge_graph.value_cache import save_value_cache
+                        from knowledge_graph.column_value_cache import set_loaded_value_cache
+                        with st.spinner("Re-probing distinct values from Oracle…"):
+                            mark_filter_candidates_heuristic(graph_obj)
+                            new_cache = probe_filter_candidates(
+                                graph_obj, config.graph,
+                                max_workers=getattr(
+                                    config.graph.value_cache, "probe_workers", 8,
+                                ),
+                            )
+                            invalidate_value_cache(_vc_path)
+                            save_value_cache(new_cache, _vc_path)
+                            set_loaded_value_cache(new_cache)
+                            if hasattr(bundle, "value_cache"):
+                                bundle.value_cache = new_cache
+                        s = new_cache.stats()
+                        st.success(
+                            f"Value cache rebuilt — {s['ok']} ok, "
+                            f"{s['too_many']} too-many, {s['errors']} err."
+                        )
+                        st.rerun()
+                    except Exception as exc:
+                        st.error(f"Value cache rebuild failed: {exc}")
+            except Exception as _vc_exc:
+                # Best-effort UI — never break the sidebar on a Phase 1 import error.
+                logger.debug("Value cache panel unavailable: %s", _vc_exc)
 
         # ------------------------------------------------------ Schema Explorer
         st.markdown(
@@ -599,6 +672,25 @@ def _render_assistant_message(content: str, result: Optional[Dict[str, Any]]) ->
                     st.rerun()
             if explanation:
                 st.caption(f"Explanation: {explanation}")
+
+    # Value mappings — auto-fixes applied by the literal validator (Phase 2)
+    value_mappings = result.get("value_mappings") or []
+    if value_mappings:
+        with st.expander(
+            f"Value mappings ({len(value_mappings)} auto-fixed)",
+            expanded=False,
+        ):
+            st.caption(
+                "These literals didn't match real DB values exactly, so the "
+                "validator rewrote them to the closest cached value before "
+                "execution. The original SQL the LLM produced is also shown."
+            )
+            for m in value_mappings:
+                col_label = f"`{m.get('table', '')}.{m.get('column', '')}`"
+                st.markdown(
+                    f"- {col_label}: `'{m.get('original', '')}'` → "
+                    f"`'{m.get('mapped', '')}'`  *({m.get('reason', '')})*"
+                )
 
     # Metrics row
     if total_rows > 0 or source:

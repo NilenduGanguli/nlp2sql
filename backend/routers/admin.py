@@ -41,6 +41,102 @@ async def get_cache_info(config=Depends(get_config)):
     )
 
 
+@router.get("/value-cache-info")
+async def get_value_cache_info(request: Request, config=Depends(get_config)):
+    """
+    Return metadata about the precomputed column-value cache.
+
+    Reports total flagged columns, how many were probed successfully (`ok`),
+    how many had > max_values distinct values (`too_many`), and how many
+    failed (`errors`). Plus the on-disk file path / age / size for ops.
+    """
+    import os
+    import time
+    from knowledge_graph.value_cache import get_value_cache_path
+
+    path = get_value_cache_path(config.graph)
+    response = {
+        "path": path,
+        "exists": False,
+        "size_mb": None,
+        "age_hours": None,
+        "stats": {"total": 0, "ok": 0, "too_many": 0, "errors": 0},
+    }
+    if os.path.exists(path):
+        response["exists"] = True
+        response["size_mb"] = round(os.path.getsize(path) / 1_000_000, 2)
+        response["age_hours"] = round(
+            (time.time() - os.path.getmtime(path)) / 3600, 1,
+        )
+
+    # Live stats from the loaded singleton (reflects what's actually in memory)
+    bundle = getattr(request.app.state, "graph_bundle", None)
+    cache = getattr(bundle, "value_cache", None) if bundle else None
+    if cache is None:
+        try:
+            from knowledge_graph.column_value_cache import _loaded_cache
+            cache = _loaded_cache
+        except Exception:
+            cache = None
+    if cache is not None:
+        response["stats"] = cache.stats()
+    return response
+
+
+@router.post("/rebuild-value-cache", response_model=RebuildResponse)
+async def rebuild_value_cache(request: Request, config=Depends(get_config)):
+    """
+    Rebuild the column-value cache from the current graph (no graph rebuild).
+
+    Useful when DB data drifted (new STATUS codes added, values renamed) but
+    the schema hasn't changed. Runs in the background; the new cache is saved
+    to disk and injected into the runtime singleton on completion.
+    """
+    from knowledge_graph.value_cache import (
+        get_value_cache_path,
+        invalidate_value_cache,
+        save_value_cache,
+    )
+    from knowledge_graph.column_value_cache import set_loaded_value_cache
+    from knowledge_graph.value_cache_builder import (
+        mark_filter_candidates_heuristic,
+        probe_filter_candidates,
+    )
+
+    app = request.app
+
+    async def _rebuild():
+        try:
+            graph = getattr(app.state, "graph", None)
+            if graph is None:
+                logger.warning("value-cache rebuild: no graph in app.state — aborting")
+                return
+            mark_filter_candidates_heuristic(graph)
+            value_cache = await anyio.to_thread.run_sync(
+                lambda: probe_filter_candidates(
+                    graph, config.graph,
+                    max_workers=getattr(config.graph.value_cache, "probe_workers", 8),
+                )
+            )
+            path = get_value_cache_path(config.graph)
+            invalidate_value_cache(path)
+            save_value_cache(value_cache, path)
+            set_loaded_value_cache(value_cache)
+            # Update the bundle so HTTP /value-cache-info sees the fresh stats.
+            bundle = getattr(app.state, "graph_bundle", None)
+            if bundle is not None:
+                bundle.value_cache = value_cache
+            logger.info("Value cache rebuilt: %s", value_cache.stats())
+        except Exception as exc:
+            logger.error("Value cache rebuild failed: %s", exc, exc_info=True)
+
+    asyncio.create_task(_rebuild())
+    return RebuildResponse(
+        status="started",
+        message="Value cache rebuild started. Poll GET /api/admin/value-cache-info for fresh stats.",
+    )
+
+
 @router.post("/rebuild", response_model=RebuildResponse)
 async def rebuild_graph(request: Request, config=Depends(get_config)):
     """
@@ -63,7 +159,7 @@ async def rebuild_graph(request: Request, config=Depends(get_config)):
             from agent.pipeline import build_pipeline
 
             # Build graph in thread (blocking Oracle I/O)
-            graph, report = await anyio.to_thread.run_sync(
+            graph, report, _value_cache = await anyio.to_thread.run_sync(
                 lambda: initialize_graph(config.graph)
             )
             app.state.graph = graph

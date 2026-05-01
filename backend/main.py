@@ -29,6 +29,10 @@ from app_config import AppConfig
 from knowledge_graph.graph_cache import (
     get_cache_path, invalidate_cache, load_graph, save_graph,
 )
+from knowledge_graph.value_cache import (
+    get_value_cache_path, load_value_cache, save_value_cache,
+)
+from knowledge_graph.column_value_cache import set_loaded_value_cache
 from knowledge_graph.init_graph import initialize_graph
 
 from backend.routers import admin, health, query, schema, sql, graph as graph_router
@@ -50,11 +54,12 @@ logger = logging.getLogger("backend.main")
 # ---------------------------------------------------------------------------
 
 class _GraphBundle:
-    __slots__ = ("graph", "llm_enhanced")
+    __slots__ = ("graph", "llm_enhanced", "value_cache")
 
-    def __init__(self, graph, llm_enhanced: bool = False):
+    def __init__(self, graph, llm_enhanced: bool = False, value_cache=None):
         self.graph = graph
         self.llm_enhanced = llm_enhanced
+        self.value_cache = value_cache
 
 
 # ---------------------------------------------------------------------------
@@ -64,24 +69,35 @@ class _GraphBundle:
 def _load_or_build_graph(config: AppConfig) -> _GraphBundle:
     """Load graph from cache or build from Oracle. Always returns a bundle."""
     cache_path = get_cache_path(config.graph)
+    value_cache_path = get_value_cache_path(config.graph)
     max_age = float(os.getenv("GRAPH_CACHE_TTL_HOURS", "0")) or None
 
     # Try cache first
     cached = load_graph(cache_path, max_age_hours=max_age)
     if cached is not None:
         graph, llm_enhanced = cached
-        logger.info("Graph loaded from cache (%s, llm_enhanced=%s)", cache_path, llm_enhanced)
-        return _GraphBundle(graph, llm_enhanced)
+        value_cache = load_value_cache(value_cache_path)
+        if value_cache is not None:
+            set_loaded_value_cache(value_cache)
+        logger.info(
+            "Graph loaded from cache (%s, llm_enhanced=%s, value_cache=%s)",
+            cache_path, llm_enhanced,
+            value_cache.stats() if value_cache else "n/a",
+        )
+        return _GraphBundle(graph, llm_enhanced, value_cache)
 
     # Build from Oracle
     logger.info("Cache miss — building graph from Oracle…")
-    graph, report = initialize_graph(config.graph)
+    graph, report, value_cache = initialize_graph(config.graph)
     if report.get("success"):
         save_graph(graph, cache_path, llm_enhanced=False)
+        if value_cache is not None and len(value_cache) > 0:
+            save_value_cache(value_cache, value_cache_path)
+            set_loaded_value_cache(value_cache)
         logger.info("Graph built and cached (%d tables)", graph.count_nodes("Table"))
     else:
         logger.warning("Graph build incomplete — check Oracle connectivity")
-    return _GraphBundle(graph, False)
+    return _GraphBundle(graph, False, value_cache)
 
 
 async def _background_tasks(app: FastAPI) -> None:
@@ -201,6 +217,7 @@ async def lifespan(app: FastAPI):
         lambda: _load_or_build_graph(config)
     )
     app.state.graph = bundle.graph
+    app.state.graph_bundle = bundle
     app.state.graph_llm_enhanced = bundle.llm_enhanced
     app.state.oracle_connected = bundle.graph.count_nodes("Table") > 0
 

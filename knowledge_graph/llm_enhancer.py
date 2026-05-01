@@ -545,3 +545,147 @@ Return ALL {len(batch)} tables. Keep each description under 120 characters."""
             logger.warning("LLM description batch failed: %s", exc)
 
     return added
+
+
+# ---------------------------------------------------------------------------
+# Filter-candidate nomination (Phase 1 / Layer 1 of value-grounded WHEREs)
+# ---------------------------------------------------------------------------
+
+_NOMINATION_SYSTEM_PROMPT = """You are a database schema analyst.
+For each column you are shown, decide whether it is likely to be used as a
+filter (WHERE col = 'value' or col IN (...)) AND has a small bounded set of
+distinct values (typically <= 30 — status flags, codes, types, categories,
+risk levels, currencies, country codes, etc.).
+
+Do NOT flag:
+- Free-text columns (names, descriptions, notes)
+- Identifiers (IDs, account numbers, keys)
+- Continuous numeric metrics (amounts, balances, scores, percentages)
+- Date/time columns
+- Long string columns
+
+Output JSON ONLY, no prose, exactly:
+{
+  "candidates": [
+    {"col_fqn": "SCHEMA.TABLE.COL",
+     "is_filter_candidate": true,
+     "confidence": "HIGH" | "MEDIUM" | "LOW",
+     "reason": "short reason"}
+  ]
+}
+Only include columns you flag as TRUE. Skip columns you reject."""
+
+
+def nominate_filter_candidates_llm(graph, llm, batch_size: int = 50) -> int:
+    """
+    Ask the LLM to nominate filter-candidate columns the heuristic missed.
+
+    Walks every Column node where ``is_filter_candidate`` is not already True,
+    sends them in batches of *batch_size* to the LLM, and flags accepted ones
+    with ``filter_reason="llm:<reason>"``.
+
+    Returns
+    -------
+    int
+        Number of new columns flagged by the LLM (excluding heuristic flags).
+    """
+    if llm is None:
+        logger.info("LLM unavailable — skipping filter-candidate nomination.")
+        return 0
+
+    pending = []
+    for col in graph.get_all_nodes("Column"):
+        if col.get("is_filter_candidate"):
+            continue
+        pending.append({
+            "col_fqn": col.get("fqn", ""),
+            "name": col.get("name", ""),
+            "data_type": col.get("data_type", ""),
+            "data_length": col.get("data_length"),
+            "data_precision": col.get("data_precision"),
+            "comments": col.get("comments", ""),
+        })
+
+    if not pending:
+        return 0
+
+    logger.info(
+        "LLM filter-candidate nomination: %d columns in %d batches",
+        len(pending), (len(pending) + batch_size - 1) // batch_size,
+    )
+
+    accepted = 0
+    for batch_start in range(0, len(pending), batch_size):
+        batch = pending[batch_start:batch_start + batch_size]
+        try:
+            accepted += _nominate_one_batch(graph, llm, batch)
+        except Exception as exc:
+            logger.warning(
+                "LLM nomination batch %d failed: %s — skipping",
+                batch_start // batch_size, exc,
+            )
+    logger.info("LLM filter-candidate nomination: flagged %d new columns", accepted)
+    return accepted
+
+
+def _nominate_one_batch(graph, llm, batch) -> int:
+    """Send one batch to the LLM and apply the results."""
+    from langchain_core.messages import HumanMessage, SystemMessage
+
+    user_lines = ["Columns to evaluate:"]
+    for c in batch:
+        length_part = f"({c['data_length']})" if c.get("data_length") else ""
+        precision_part = f" precision={c['data_precision']}" if c.get("data_precision") else ""
+        comment_part = f" -- {c['comments']}" if c.get("comments") else ""
+        user_lines.append(
+            f"- {c['col_fqn']} | {c['data_type']}{length_part}{precision_part}{comment_part}"
+        )
+    response = llm.invoke([
+        SystemMessage(content=_NOMINATION_SYSTEM_PROMPT),
+        HumanMessage(content="\n".join(user_lines)),
+    ])
+    content = getattr(response, "content", str(response))
+
+    try:
+        parsed = _extract_json_object(content)
+        candidates = parsed.get("candidates", []) if parsed else []
+    except Exception as exc:
+        logger.warning("Failed to parse LLM nomination response: %s", exc)
+        return 0
+
+    flagged_in_batch = 0
+    for cand in candidates:
+        if not cand.get("is_filter_candidate"):
+            continue
+        fqn = cand.get("col_fqn", "")
+        if not fqn or graph.get_node("Column", fqn) is None:
+            continue
+        reason = (cand.get("reason") or cand.get("confidence") or "nominated")[:80]
+        graph.merge_node("Column", fqn, {
+            "is_filter_candidate": True,
+            "filter_reason": f"llm:{reason}",
+        })
+        flagged_in_batch += 1
+    return flagged_in_batch
+
+
+def _extract_json_object(text: str):
+    """Extract the first {...} JSON object from text. Handles markdown fences."""
+    import json
+    import re
+    cleaned = re.sub(r"```(?:json)?\s*", "", text, flags=re.IGNORECASE).replace("```", "")
+    start = cleaned.find("{")
+    if start == -1:
+        return None
+    depth, end = 0, -1
+    for i in range(start, len(cleaned)):
+        if cleaned[i] == "{":
+            depth += 1
+        elif cleaned[i] == "}":
+            depth -= 1
+            if depth == 0:
+                end = i
+                break
+    if end == -1:
+        return None
+    return json.loads(cleaned[start:end + 1])

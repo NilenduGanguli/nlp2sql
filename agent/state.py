@@ -91,6 +91,14 @@ class AgentState(TypedDict):
     validation_errors: List[str]
     """Error messages produced by the sql_validator node."""
 
+    value_mappings: List[Dict[str, Any]]
+    """
+    Phase 2 / Layer 3: confident literal auto-fixes applied by the SQL
+    validator.  Each entry: {table, column, original, mapped, reason}.
+    Surfaced to the UI so analysts can see which WHERE-clause literals
+    were silently rewritten to match real DB values.
+    """
+
     optimized_sql: str
     """Final SQL after rule-based optimizations (e.g. row limit injection)."""
 

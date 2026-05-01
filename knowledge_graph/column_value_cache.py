@@ -24,34 +24,88 @@ logger = logging.getLogger(__name__)
 # Maximum distinct values to consider a column "enum-like"
 MAX_DISTINCT_VALUES = 30
 
-# Column name substrings (case-insensitive) that suggest a small value set
+# Whole-word enum names (case-insensitive). Anchored: matches NAME, NAME_*,
+# *_NAME, but not arbitrary substrings.
 _ENUM_WORDS = {
     "STATUS", "TYPE", "FLAG", "CODE", "CATEGORY", "LEVEL", "TIER",
     "CLASS", "STATE", "REASON", "KIND", "MODE", "PRIORITY", "GENDER",
     "STAGE", "PHASE", "RATING", "INDICATOR", "ACTIVE", "ENABLED",
-    "RISK", "CURRENCY", "COUNTRY",
+    "CURRENCY", "COUNTRY", "GRADE", "BUCKET", "SEGMENT",
+    "ROLE", "METHOD", "CHANNEL", "SOURCE", "SCOPE", "RELATIONSHIP",
 }
+# NOTE: bare "RISK" is intentionally NOT in this list — it produces too
+# many false positives (RISK_SCORE is a NUMBER metric, not an enum).
+# RISK_RATING / RISK_LEVEL / RISK_GRADE etc. are still flagged via the
+# trailing word (RATING / LEVEL / GRADE).
+
+# Short suffix abbreviations common in KYC/financial schemas (Oracle uppercase).
+# Matched as the trailing token after an underscore, e.g. ACCT_TYP, RSK_LVL.
+_ENUM_ABBREV_SUFFIXES = {
+    "CD", "TYP", "FLG", "STS", "CAT", "LVL", "RSK", "RSN",
+    "IND", "PRI", "GRP", "TY", "CTGY", "SEG",
+}
+
+# Boolean-flag prefixes — usually NUMBER(1) or CHAR(1).
+_FLAG_PREFIXES = ("IS_", "HAS_", "CAN_", "ALLOW_", "ENABLE_")
 
 # In-process cache: (SCHEMA, TABLE, COLUMN) → list of string values (or [] = skip)
 _cache: Dict[Tuple[str, str, str], List[str]] = {}
+
+# Disk-loaded value cache, set once at app/process start. None means
+# "no Phase 1 cache available — fall back to live Oracle probe".
+_loaded_cache = None
+
+
+def set_loaded_value_cache(cache) -> None:
+    """Inject the disk-loaded ValueCache so lookups hit it before Oracle.
+
+    Called once per process from ``app.py`` and the FastAPI lifespan after
+    the cache is loaded from disk (or built from Oracle on first start).
+    """
+    global _loaded_cache
+    _loaded_cache = cache
 
 
 def is_likely_enum_column(
     column_name: str,
     data_type: str = "",
     data_length: int = 0,
+    data_precision: int = 0,
 ) -> bool:
-    """Return True if this column is likely to hold a small fixed set of values."""
+    """
+    Return True if this column is likely to hold a small fixed set of values.
+
+    Layered checks (any match → True):
+      1. Whole-word enum name (STATUS, RISK_LEVEL, ACCOUNT_STATUS, …)
+      2. Abbreviation suffix (_CD, _TYP, _LVL, _FLG, _STS, …)
+      3. Boolean-flag name prefix (IS_, HAS_, CAN_, …)
+      4. Short string types (CHAR ≤ 5, VARCHAR2 ≤ 15)
+      5. Tiny numeric (NUMBER with precision 1..3) — flag-like
+    """
     upper = column_name.upper()
-    # Match whole-word occurrence: STATUS, ACCOUNT_STATUS, STATUS_CODE, etc.
+    dtype = (data_type or "").upper()
+
     for word in _ENUM_WORDS:
         if upper == word or upper.endswith(f"_{word}") or upper.startswith(f"{word}_"):
             return True
-    # Short fixed-char types are almost always Y/N flags or codes
-    if data_type == "CHAR" and 0 < data_length <= 5:
+
+    if "_" in upper:
+        suffix = upper.rsplit("_", 1)[-1]
+        if suffix in _ENUM_ABBREV_SUFFIXES:
+            return True
+
+    for prefix in _FLAG_PREFIXES:
+        if upper.startswith(prefix):
+            return True
+
+    if dtype == "CHAR" and 0 < data_length <= 5:
         return True
-    if data_type == "VARCHAR2" and 0 < data_length <= 15:
+    if dtype == "VARCHAR2" and 0 < data_length <= 15:
         return True
+
+    if dtype == "NUMBER" and 0 < data_precision <= 3:
+        return True
+
     return False
 
 
@@ -63,18 +117,34 @@ def get_distinct_values(
     max_values: int = MAX_DISTINCT_VALUES,
 ) -> List[str]:
     """
-    Return the distinct non-null values for ``schema.table.column``.
+    Return distinct non-null values for ``schema.table.column``.
 
-    Results are cached in process memory on the first successful fetch.
+    Lookup order:
+      1. Disk-loaded ValueCache (populated by Phase 1 at graph build)
+      2. Process-local in-memory cache (lazy probes within this run)
+      3. Live Oracle DISTINCT probe (fallback; result cached in memory)
+
     Returns an empty list when:
-    - the column has more than ``max_values`` distinct values (not an enum)
-    - Oracle is unreachable
-    - any other error occurs
+      - the column has more than ``max_values`` distinct values
+      - the cached entry records a probe error
+      - Oracle is unreachable or a live probe fails
     """
     key = (schema.upper(), table.upper(), column.upper())
+
+    # 1. Disk-loaded cache (Phase 1) — fast path, no Oracle hit.
+    if _loaded_cache is not None:
+        entry = _loaded_cache.get(schema, table, column)
+        if entry is not None:
+            if entry.too_many or entry.error:
+                return []
+            return list(entry.values)
+
+    # 2. Process-local memo — set either by a previous call in this run or by
+    #    invalidate_cache().
     if key in _cache:
         return _cache[key]
 
+    # 3. Live Oracle probe — last resort for columns the disk cache missed.
     try:
         import oracledb  # type: ignore
 
@@ -95,7 +165,6 @@ def get_distinct_values(
         conn.close()
 
         if len(rows) > max_values:
-            # Column is not an enum — too many distinct values; cache as empty to skip
             _cache[key] = []
             return []
 
@@ -112,7 +181,7 @@ def get_distinct_values(
             "column_value_cache: skipping %s.%s.%s — %s",
             schema, table, column, exc,
         )
-        _cache[key] = []  # don't retry on failures
+        _cache[key] = []
         return []
 
 

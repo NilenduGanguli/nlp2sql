@@ -46,6 +46,7 @@ from knowledge_graph.oracle_extractor import OracleMetadataExtractor
 from knowledge_graph.graph_builder import GraphBuilder
 from knowledge_graph.graph_store import KnowledgeGraph
 from knowledge_graph.glossary_loader import InferredGlossaryBuilder
+from knowledge_graph.value_cache import ValueCache
 
 logging.basicConfig(
     level=logging.INFO,
@@ -95,7 +96,7 @@ def validate_graph(graph: KnowledgeGraph) -> bool:
 def initialize_graph(
     config: Optional[GraphConfig] = None,
     refresh_only: bool = False,
-) -> Tuple[KnowledgeGraph, Dict[str, Any]]:
+) -> Tuple[KnowledgeGraph, Dict[str, Any], "ValueCache"]:
     """
     Run the full graph construction pipeline.
 
@@ -106,9 +107,11 @@ def initialize_graph(
 
     Returns
     -------
-    (KnowledgeGraph, report_dict)
+    (KnowledgeGraph, report_dict, ValueCache)
     The KnowledgeGraph is ready for traversal queries.
     The report dict contains build statistics and a 'success' boolean key.
+    The ValueCache contains distinct values for filter-candidate columns
+    (empty when value-caching is disabled or Oracle is unreachable).
     """
     start_time = time.monotonic()
     config = config or GraphConfig()
@@ -131,7 +134,7 @@ def initialize_graph(
     extractor = OracleMetadataExtractor(config.oracle)
     if not extractor.check_connectivity():
         logger.error("Cannot connect to Oracle — aborting initialization")
-        return KnowledgeGraph(), report
+        return KnowledgeGraph(), report, ValueCache()
     report["oracle_connected"] = True
     logger.info("Oracle connectivity: OK")
 
@@ -144,7 +147,7 @@ def initialize_graph(
         metadata = extractor.extract()
     except Exception as exc:
         logger.exception("Metadata extraction failed: %s", exc)
-        return KnowledgeGraph(), report
+        return KnowledgeGraph(), report, ValueCache()
 
     extract_elapsed = time.monotonic() - extract_start
     report["extraction"] = {
@@ -173,7 +176,7 @@ def initialize_graph(
     except Exception as exc:
         logger.exception("Graph build failed — tables/columns could not be loaded: %s", exc)
         report["build"] = {"error": str(exc), "elapsed_seconds": round(time.monotonic() - build_start, 1)}
-        return graph, report
+        return graph, report, ValueCache()
     build_elapsed = time.monotonic() - build_start
     report["build"] = {**build_stats, "elapsed_seconds": round(build_elapsed, 1)}
 
@@ -204,8 +207,45 @@ def initialize_graph(
     else:
         report["validation_passed"] = True
 
+    # ------------------------------------------------------------------
+    # Step 6: Build the column-value cache (Layer 1 / Phase 1)
+    # ------------------------------------------------------------------
+    value_cache = ValueCache()
+    vc_cfg = getattr(config, "value_cache", None)
+    if vc_cfg is None or vc_cfg.enabled:
+        try:
+            from knowledge_graph.value_cache_builder import (
+                mark_filter_candidates_heuristic,
+                probe_filter_candidates,
+            )
+            from knowledge_graph.llm_enhancer import nominate_filter_candidates_llm
+
+            n_heur = mark_filter_candidates_heuristic(graph)
+            logger.info("Heuristic flagged %d filter-candidate columns", n_heur)
+
+            if vc_cfg is None or vc_cfg.llm_nominate:
+                try:
+                    from agent.llm import get_llm
+                    from app_config import AppConfig
+                    llm = get_llm(AppConfig())
+                    n_llm = nominate_filter_candidates_llm(
+                        graph, llm,
+                        batch_size=getattr(vc_cfg, "llm_batch_size", 50),
+                    )
+                    logger.info("LLM nominated %d additional filter-candidate columns", n_llm)
+                except Exception as exc:
+                    logger.warning("LLM nomination skipped: %s", exc)
+
+            value_cache = probe_filter_candidates(
+                graph, config,
+                max_workers=getattr(vc_cfg, "probe_workers", 8),
+            )
+        except Exception as exc:
+            logger.warning("Value cache build failed (graph still usable): %s", exc)
+
     total_elapsed = time.monotonic() - start_time
     report["elapsed_seconds"] = round(total_elapsed, 1)
+    report["value_cache_stats"] = value_cache.stats() if value_cache else {}
     report["success"] = True
 
     # ------------------------------------------------------------------
@@ -222,10 +262,11 @@ def initialize_graph(
                 build_stats.get("similar_to", 0))
     logger.info("  Business terms: %d terms, %d mappings",
                 glossary_stats.get("terms", 0), glossary_stats.get("mappings", 0))
+    logger.info("  Value cache: %s", value_cache.stats() if value_cache else "n/a")
     logger.info("  Validation: %s",
                 "PASSED" if report["validation_passed"] else "FAILED")
 
-    return graph, report
+    return graph, report, value_cache
 
 
 # ---------------------------------------------------------------------------
@@ -255,11 +296,11 @@ if __name__ == "__main__":
     args = _parse_args()
     logging.getLogger().setLevel(getattr(logging, args.log_level))
 
-    _graph, _report = initialize_graph(refresh_only=args.refresh_only)
+    _graph, _report, _value_cache = initialize_graph(refresh_only=args.refresh_only)
 
     if not _report["success"]:
         logger.error("Graph initialization FAILED. See logs above for details.")
         sys.exit(1)
 
-    logger.info("Graph initialization SUCCEEDED.")
+    logger.info("Graph initialization SUCCEEDED. Value cache: %s", _value_cache.stats())
     sys.exit(0)
