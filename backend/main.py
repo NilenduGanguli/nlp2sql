@@ -217,6 +217,7 @@ async def lifespan(app: FastAPI):
         lambda: _load_or_build_graph(config)
     )
     app.state.graph = bundle.graph
+    app.state.graph_bundle = bundle
     app.state.graph_llm_enhanced = bundle.llm_enhanced
     app.state.oracle_connected = bundle.graph.count_nodes("Table") > 0
 

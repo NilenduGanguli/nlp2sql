@@ -51,6 +51,7 @@ def make_result_formatter() -> Callable[[AgentState], AgentState]:
         sql_explanation = state.get("sql_explanation", "")
         schema_context = state.get("schema_context", "")
         validation_errors = state.get("validation_errors", [])
+        value_mappings = state.get("value_mappings", [])
         _trace = list(state.get("_trace", []))
         trace = TraceStep("format_result", "formatting")
 
@@ -70,6 +71,7 @@ def make_result_formatter() -> Callable[[AgentState], AgentState]:
                 "data_source": "none",
                 "schema_context_tables": _extract_table_names(schema_context),
                 "validation_errors": validation_errors,
+                "value_mappings": value_mappings,
             }
             trace.output_summary = {"type": response["type"], "total_rows": 0, "data_source": "none"}
             _trace.append(trace.finish().to_dict())
@@ -118,6 +120,7 @@ def make_result_formatter() -> Callable[[AgentState], AgentState]:
             "data_source": data_source,
             "schema_context_tables": _extract_table_names(schema_context),
             "validation_errors": validation_errors,
+            "value_mappings": value_mappings,
         }
 
         logger.info(
