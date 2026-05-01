@@ -158,7 +158,11 @@ def _check_column_existence(sql: str, graph) -> List[str]:
         return []
 
 
-def make_sql_validator(graph=None) -> Callable[[AgentState], AgentState]:
+def make_sql_validator(
+    graph=None,
+    value_cache=None,
+    fuzzy_threshold: float = 0.85,
+) -> Callable[[AgentState], AgentState]:
     """
     Factory: returns a LangGraph node function that validates Oracle SQL.
 
@@ -166,6 +170,14 @@ def make_sql_validator(graph=None) -> Callable[[AgentState], AgentState]:
     ----------
     graph : KnowledgeGraph | None
         When provided, enables column-existence validation (check 6).
+    value_cache : ValueCache | None
+        When provided, enables literal-grounding check 7 — every WHERE/HAVING
+        literal is compared against cached distinct values for that column.
+        Confident fuzzy matches (case-insensitive equal, unique prefix, etc.)
+        are silently rewritten in-place; ambiguous or unmatched literals
+        emit ``[VALUE_HINT]`` errors that drive the existing retry loop.
+    fuzzy_threshold : float
+        Minimum score required for an auto-fix rewrite (default 0.85).
 
     Returns
     -------
@@ -260,6 +272,47 @@ def make_sql_validator(graph=None) -> Callable[[AgentState], AgentState]:
             errors.extend(col_errors)
 
         # ------------------------------------------------------------------ #
+        # 7. Literal-grounding check (Phase 2 / Layer 3)
+        #    Confident fuzzy matches → silently rewrite the SQL in-place.
+        #    Ambiguous / unmatched literals → push [VALUE_HINT] error so
+        #    the existing retry path regenerates with the explicit allowed
+        #    value list.
+        # ------------------------------------------------------------------ #
+        value_mappings: List[Dict] = []
+        if not errors and value_cache is not None:
+            try:
+                from agent.value_validator import (
+                    apply_rewrites,
+                    validate_where_literals,
+                )
+                findings, rewrites = validate_where_literals(
+                    sql, value_cache, fuzzy_threshold=fuzzy_threshold,
+                )
+                if rewrites:
+                    sql = apply_rewrites(sql, rewrites)
+                    for rw in rewrites:
+                        value_mappings.append({
+                            "table": rw.table_fqn,
+                            "column": rw.column,
+                            "original": rw.original,
+                            "mapped": rw.replacement,
+                            "reason": rw.reason,
+                        })
+                    logger.info(
+                        "Literal validator: auto-fixed %d literal(s)", len(rewrites),
+                    )
+                for f in findings:
+                    allowed_str = ", ".join(f"'{v}'" for v in f.allowed_values)
+                    errors.append(
+                        f"[VALUE_HINT] Column {f.table_fqn}.{f.column} does not "
+                        f"contain literal '{f.bad_literal}'. Allowed values: "
+                        f"{allowed_str}. Map the user's intent to one or more of "
+                        f"these and rewrite the WHERE clause."
+                    )
+            except Exception as exc:
+                logger.debug("Literal validator skipped due to error: %s", exc)
+
+        # ------------------------------------------------------------------ #
         # Result
         # ------------------------------------------------------------------ #
         validation_passed = len(errors) == 0
@@ -268,13 +321,19 @@ def make_sql_validator(graph=None) -> Callable[[AgentState], AgentState]:
         else:
             logger.warning("SQL validation failed: %s", errors)
 
-        trace.output_summary = {"validation_passed": validation_passed, "errors": errors}
+        trace.output_summary = {
+            "validation_passed": validation_passed,
+            "errors": errors,
+            "value_mappings": value_mappings,
+        }
         _trace.append(trace.finish().to_dict())
 
         return {
             **state,
+            "generated_sql": sql,                     # may have been rewritten
             "validation_passed": validation_passed,
             "validation_errors": errors,
+            "value_mappings": value_mappings,
             "step": "sql_validated",
             "_trace": _trace,
         }

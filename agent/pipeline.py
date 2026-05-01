@@ -177,7 +177,24 @@ def build_pipeline(graph, config, llm=None):
     entity_node  = entity_fn    if entity_fn    else _graph_default_entities
     schema_node = context_builder.make_context_builder(graph, config=config)
     gen_node    = gen_fn       if gen_fn       else _graph_fallback_sql
-    valid_node  = sql_validator.make_sql_validator(graph=graph)
+    # Resolve loaded ValueCache once (Phase 2 — Layer 3 literal grounding).
+    # The cache is set as a process-wide singleton by app.py / backend.main
+    # at startup; we read it from there so the validator hits the same data
+    # the entity extractor and DDL annotator already use.
+    _value_cache = None
+    _vc_cfg = getattr(getattr(config, "graph", None), "value_cache", None)
+    if _vc_cfg is None or getattr(_vc_cfg, "validator_enabled", True):
+        try:
+            from knowledge_graph.column_value_cache import _loaded_cache as _shared_vc
+            _value_cache = _shared_vc
+        except Exception:
+            _value_cache = None
+    _fuzzy_threshold = getattr(_vc_cfg, "fuzzy_threshold", 0.85) if _vc_cfg else 0.85
+    valid_node  = sql_validator.make_sql_validator(
+        graph=graph,
+        value_cache=_value_cache,
+        fuzzy_threshold=_fuzzy_threshold,
+    )
     opt_node    = query_optimizer.make_query_optimizer()
     exec_node   = query_executor.make_query_executor(config)
     format_node = result_formatter.make_result_formatter()
