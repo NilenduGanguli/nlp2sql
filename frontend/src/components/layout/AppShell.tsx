@@ -3,7 +3,7 @@ import { Sidebar } from './Sidebar'
 import { ModeToggle } from './ModeToggle'
 import { useUserMode } from '../../hooks/useUserMode'
 
-export type TabId = 'chat' | 'editor' | 'schema' | 'graph' | 'relationships' | 'history' | 'investigate' | 'prompt_studio' | 'kyc_agent'
+export type TabId = 'chat' | 'editor' | 'schema' | 'graph' | 'relationships' | 'history' | 'investigate' | 'teach' | 'prompt_studio' | 'kyc_agent'
 
 interface AppShellProps {
   activeTab: TabId
@@ -21,6 +21,7 @@ const TAB_LABELS: Record<TabId, string> = {
   relationships: 'Relationships',
   history: 'History',
   investigate: 'Investigate',
+  teach: 'Teach',
   prompt_studio: 'Prompt Studio',
   kyc_agent: 'KYC Agent',
 }
@@ -35,13 +36,13 @@ export const AppShell: React.FC<AppShellProps> = ({
   const { mode } = useUserMode()
 
   const visibleTabs = (Object.keys(TAB_LABELS) as TabId[]).filter(
-    (tab) => !(mode === 'consumer' && tab === 'investigate'),
+    (tab) => !(mode === 'consumer' && (tab === 'investigate' || tab === 'teach')),
   )
 
-  // If the user switches to consumer mode while on the Investigate tab,
+  // If the user switches to consumer mode while on a curator-only tab,
   // fall back to the chat tab so they don't get stuck on a hidden surface.
   useEffect(() => {
-    if (mode === 'consumer' && activeTab === 'investigate') {
+    if (mode === 'consumer' && (activeTab === 'investigate' || activeTab === 'teach')) {
       onTabChange('chat')
     }
   }, [mode, activeTab, onTabChange])
