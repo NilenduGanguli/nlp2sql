@@ -99,6 +99,25 @@ class AgentState(TypedDict):
     were silently rewritten to match real DB values.
     """
 
+    accepted_examples: List[Dict[str, Any]]
+    """
+    Teaching-knowledge Phase 1: up to top_k=3 accepted-query session entries
+    whose similarity to the current query is between 0.30 and 0.75.
+
+    The SQL generator injects these into its prompt as strongly-preferred
+    examples. Above 0.75 the session_lookup node short-circuits the pipeline
+    instead of populating this field; below 0.30 the field stays empty.
+
+    Each entry: {
+      score: float,
+      description: str,
+      why_this_sql: str,
+      sql: str,
+      key_concepts: List[str],
+      tags: List[str],
+    }
+    """
+
     optimized_sql: str
     """Final SQL after rule-based optimizations (e.g. row limit injection)."""
 
