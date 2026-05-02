@@ -284,6 +284,62 @@ class KYCKnowledgeStore:
                     best_created = created
             return best
 
+    def rank_accepted_entries(
+        self,
+        query: str,
+        top_k: int = 3,
+        graph=None,
+    ) -> List["tuple"]:
+        """Return up to top_k accepted-query entries by graded similarity.
+
+        Each result is ``(entry, score)`` with score in [0.0, 1.0]. Score is
+        the max of two Jaccard scores so old entries (without the Phase 1
+        enrichment fields) keep ranking via the legacy path:
+          1. tokens of (description + why_this_sql + key_concepts + tags
+                        + original_query)
+          2. tokens of (original_query + enriched_query)  — legacy fallback
+
+        Entries whose ``tables_used`` aren't all present in *graph* are
+        filtered out when graph is provided. Sorted descending by score.
+        """
+        if not query or len(query.strip()) < 3:
+            return []
+        qtoks = _tokenize(query)
+        if not qtoks:
+            return []
+        out: List["tuple"] = []
+        with self._lock:
+            for e in self.static_entries:
+                if e.source != "query_session" or e.category != "query_session":
+                    continue
+                md = e.metadata or {}
+                if graph is not None:
+                    tables = md.get("tables_used", []) or []
+                    if tables and not all(graph.get_node("Table", t) for t in tables):
+                        continue
+                enriched_text = " ".join([
+                    str(md.get("description", "") or ""),
+                    str(md.get("why_this_sql", "") or ""),
+                    " ".join(md.get("key_concepts", []) or []),
+                    " ".join(md.get("tags", []) or []),
+                    str(md.get("original_query", "") or ""),
+                ]).strip()
+                legacy_text = (
+                    str(md.get("original_query", "") or "") + " "
+                    + str(md.get("enriched_query", "") or "")
+                ).strip()
+                s_enriched = (
+                    _jaccard(qtoks, _tokenize(enriched_text)) if enriched_text else 0.0
+                )
+                s_legacy = (
+                    _jaccard(qtoks, _tokenize(legacy_text)) if legacy_text else 0.0
+                )
+                score = max(s_enriched, s_legacy)
+                if score > 0:
+                    out.append((e, score))
+        out.sort(key=lambda t: t[1], reverse=True)
+        return out[:top_k]
+
     def update_entry(self, entry_id: str, content: str, category: str, metadata: Optional[Dict] = None) -> bool:
         with self._lock:
             for e in self.static_entries:
