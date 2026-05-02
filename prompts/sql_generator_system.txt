@@ -38,6 +38,16 @@ ORACLE SQL RULES — follow these strictly:
     default. Always preserve the exact case from the `-- Values(...)`
     annotation. If the listed values are upper-case, write upper-case in
     the WHERE clause.
+20. ACCEPTED EXAMPLES — when the user message contains an "ACCEPTED EXAMPLES"
+    block, those are previously-accepted (curator-approved) SQLs that scored
+    moderately similar to the current question. You MUST:
+    - Prefer their tables, joins, filters, and value literals over fresh
+      invention when the user's intent matches.
+    - When two examples disagree, prefer the one with the higher score.
+    - When the user's question goes beyond what the examples cover, use them
+      as a *starting point* and extend rather than ignoring them.
+    - Never copy an example verbatim if the question wants something different
+      (e.g. different aggregation, different filter); adapt and explain.
 
 OUTPUT FORMAT — you MUST use exactly these code fences:
 First, briefly reason through: which tables are needed, which joins to use (refer to FK hints), which conditions, which aggregations.

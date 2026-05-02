@@ -62,6 +62,16 @@ ORACLE SQL RULES — follow these strictly:
     default. Always preserve the exact case from the `-- Values(...)`
     annotation. If the listed values are upper-case, write upper-case in
     the WHERE clause.
+20. ACCEPTED EXAMPLES — when the user message contains an "ACCEPTED EXAMPLES"
+    block, those are previously-accepted (curator-approved) SQLs that scored
+    moderately similar to the current question. You MUST:
+    - Prefer their tables, joins, filters, and value literals over fresh
+      invention when the user's intent matches.
+    - When two examples disagree, prefer the one with the higher score.
+    - When the user's question goes beyond what the examples cover, use them
+      as a *starting point* and extend rather than ignoring them.
+    - Never copy an example verbatim if the question wants something different
+      (e.g. different aggregation, different filter); adapt and explain.
 
 OUTPUT FORMAT — you MUST use exactly these code fences:
 First, briefly reason through: which tables are needed, which joins to use (refer to FK hints), which conditions, which aggregations.
@@ -179,6 +189,34 @@ def make_sql_generator(llm) -> Callable[[AgentState], AgentState]:
             f"Schema (DDL context):\n{schema_context}",
             f"\nQuestion: {user_input}",
         ]
+
+        # Phase 1 (teaching-knowledge): inject moderately-similar accepted-query
+        # examples retrieved by session_lookup. Sort descending by score so the
+        # LLM reads the closest match first.
+        accepted_examples = state.get("accepted_examples") or []
+        if accepted_examples:
+            sorted_examples = sorted(
+                accepted_examples,
+                key=lambda e: e.get("score", 0.0),
+                reverse=True,
+            )
+            ex_lines = ["", "--- ACCEPTED EXAMPLES (sorted by similarity) ---"]
+            for i, ex in enumerate(sorted_examples, 1):
+                ex_lines.append(f"\nExample {i} (score={ex.get('score', 0.0)}):")
+                if ex.get("description"):
+                    ex_lines.append(f"  Description: {ex['description']}")
+                if ex.get("why_this_sql"):
+                    ex_lines.append(f"  Reasoning: {ex['why_this_sql']}")
+                if ex.get("key_concepts"):
+                    ex_lines.append(f"  Key concepts: {', '.join(ex['key_concepts'])}")
+                if ex.get("sql"):
+                    ex_lines.append(f"  SQL:\n```sql\n{ex['sql']}\n```")
+            ex_lines.append(
+                "\nFollow rule 20: prefer the tables/joins/filters of the most-similar "
+                "example over fresh invention; adapt only when the question genuinely diverges."
+            )
+            user_msg_parts.append("\n".join(ex_lines))
+
         if history_text:
             user_msg_parts.append(f"\nConversation context:\n{history_text}")
 

@@ -25,7 +25,8 @@ def _entry():
 def test_match_short_circuits():
     store = MagicMock()
     store.find_verified_pattern = MagicMock(return_value=None)
-    store.find_session_match = MagicMock(return_value=_entry())
+    # Mock the new graded retrieval; score 0.9 → short-circuit path.
+    store.rank_accepted_entries = MagicMock(return_value=[(_entry(), 0.9)])
     graph = MagicMock()
 
     node = make_session_lookup(store, graph)
@@ -42,7 +43,7 @@ def test_match_short_circuits():
 def test_no_match_passes_through():
     store = MagicMock()
     store.find_verified_pattern = MagicMock(return_value=None)
-    store.find_session_match = MagicMock(return_value=None)
+    store.rank_accepted_entries = MagicMock(return_value=[])
     graph = MagicMock()
     node = make_session_lookup(store, graph)
 
@@ -57,26 +58,26 @@ def test_no_match_passes_through():
 def test_skipped_for_followup_intent():
     store = MagicMock()
     store.find_verified_pattern = MagicMock(return_value=None)
-    store.find_session_match = MagicMock(return_value=_entry())
+    store.rank_accepted_entries = MagicMock(return_value=[(_entry(), 0.9)])
     graph = MagicMock()
     node = make_session_lookup(store, graph)
     state = {"user_input": "more rows", "enriched_query": "more rows",
             "intent": "RESULT_FOLLOWUP", "conversation_history": [], "_trace": []}
     out = node(state)
-    store.find_session_match.assert_not_called()
+    store.rank_accepted_entries.assert_not_called()
     assert not out.get("has_candidates")
 
 
 def test_skipped_for_mid_thread():
     store = MagicMock()
     store.find_verified_pattern = MagicMock(return_value=None)
-    store.find_session_match = MagicMock(return_value=_entry())
+    store.rank_accepted_entries = MagicMock(return_value=[(_entry(), 0.9)])
     graph = MagicMock()
     node = make_session_lookup(store, graph)
     state = {"user_input": "x", "enriched_query": "x", "intent": "DATA_QUERY",
             "conversation_history": [{"role": "user", "content": "earlier"}], "_trace": []}
     out = node(state)
-    store.find_session_match.assert_not_called()
+    store.rank_accepted_entries.assert_not_called()
     assert not out.get("has_candidates")
 
 

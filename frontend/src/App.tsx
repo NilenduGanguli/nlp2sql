@@ -7,6 +7,7 @@ import { GraphPage } from './pages/GraphPage'
 import { RelationshipsPage } from './pages/RelationshipsPage'
 import { HistoryPage } from './pages/HistoryPage'
 import { InvestigatePage } from './pages/InvestigatePage'
+import { TeachPage } from './pages/TeachPage'
 import { PromptStudioPage } from './pages/PromptStudioPage'
 import { KYCAgentPage } from './pages/KYCAgentPage'
 import { SchemaTab } from './components/schema/SchemaTab'
@@ -137,6 +138,16 @@ export default function App() {
         }}
       >
         <InvestigatePage />
+      </div>
+
+      <div
+        style={{
+          display: activeTab === 'teach' ? 'flex' : 'none',
+          flexDirection: 'column',
+          height: '100%',
+        }}
+      >
+        <TeachPage />
       </div>
 
       <div

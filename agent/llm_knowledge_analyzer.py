@@ -386,6 +386,31 @@ def analyze_accepted_session(llm, digest: Dict[str, Any]) -> Optional[KnowledgeE
         full_content = content
 
     rejected = [c for c in digest.get("candidates", []) if not c.get("accepted")]
+
+    # Phase 1 (teaching-knowledge): pull through the new structured fields the
+    # session_analyzer prompt now asks for. All optional with safe defaults so
+    # an LLM that omits them doesn't break the entry.
+    description = str(parsed.get("description", "")).strip()
+    why_this_sql = str(parsed.get("why_this_sql", "")).strip()
+    key_concepts = [str(c).strip() for c in parsed.get("key_concepts", []) if c]
+    tags = [str(t).strip() for t in parsed.get("tags", []) if t]
+    anticipated_clarifications = [
+        {
+            "question": str(c.get("question", "")).strip(),
+            "answer":   str(c.get("answer", "")).strip(),
+        }
+        for c in parsed.get("anticipated_clarifications", [])
+        if isinstance(c, dict) and c.get("question") and c.get("answer")
+    ]
+    raw_kfv = parsed.get("key_filter_values") or {}
+    key_filter_values: Dict[str, List[str]] = {}
+    if isinstance(raw_kfv, dict):
+        for k, vs in raw_kfv.items():
+            if not k:
+                continue
+            seq = vs if isinstance(vs, list) else [vs]
+            key_filter_values[str(k).upper()] = [str(v) for v in seq if v not in (None, "")]
+
     metadata = {
         "session_id": digest.get("session_id", ""),
         "title": title,
@@ -406,6 +431,13 @@ def analyze_accepted_session(llm, digest: Dict[str, Any]) -> Optional[KnowledgeE
         "tool_calls_summary": digest.get("tool_calls", []),
         "result_shape": digest.get("result_shape", {}),
         "created_at": digest.get("created_at", time.time()),
+        # Phase 1 enrichment
+        "description": description,
+        "why_this_sql": why_this_sql,
+        "key_concepts": key_concepts,
+        "tags": tags,
+        "anticipated_clarifications": anticipated_clarifications,
+        "key_filter_values": key_filter_values,
     }
     eid = hashlib.sha1(
         f"query_session:{metadata['original_query']}:{metadata['created_at']}".encode()
