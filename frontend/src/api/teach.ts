@@ -69,3 +69,44 @@ export async function saveTeach(payload: TeachSavePayload): Promise<TeachSaveRes
     body: JSON.stringify(payload),
   })
 }
+
+// ──────────────────────────────────────────────────────────────────────────
+// Bulk upload (Phase 3)
+// ──────────────────────────────────────────────────────────────────────────
+
+export interface BulkResultItem {
+  user_input: string
+  status: 'saved' | 'error'
+  session_entry_id?: string | null
+  learned_pattern_count?: number
+  error?: string | null
+}
+
+export interface BulkResponse {
+  format_detected: string
+  total: number
+  saved: number
+  failed: number
+  items: BulkResultItem[]
+}
+
+/**
+ * Upload a JSON / CSV / SQL / ZIP-of-SQL file. Backend auto-detects the
+ * format and analyzes + saves each (question, expected_sql) pair.
+ */
+export async function bulkTeach(file: File): Promise<BulkResponse> {
+  const fd = new FormData()
+  fd.append('file', file)
+  const r = await fetch('/api/teach/bulk', { method: 'POST', body: fd })
+  if (!r.ok) {
+    let message = `HTTP ${r.status}`
+    try {
+      const body = await r.json()
+      message = body?.detail ?? body?.message ?? message
+    } catch {
+      // ignore
+    }
+    throw new Error(message)
+  }
+  return r.json() as Promise<BulkResponse>
+}

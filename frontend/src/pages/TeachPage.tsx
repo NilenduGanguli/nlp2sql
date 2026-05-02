@@ -13,7 +13,9 @@
 import React, { useCallback, useState } from 'react'
 import {
   analyzeTeach,
+  bulkTeach,
   saveTeach,
+  type BulkResponse,
   type TeachAnalysis,
   type TeachClarification,
   type TeachSavePayload,
@@ -103,6 +105,8 @@ export const TeachPage: React.FC = () => {
         Upload a (question, expected SQL) pair. The LLM analyzes it into reusable knowledge,
         you review/edit, then save — every future similar query benefits.
       </p>
+
+      <BulkUploadPanel />
 
       <StepBar step={step} setStep={setStep} hasInput={Boolean(userInput && expectedSql)} />
 
@@ -963,6 +967,182 @@ const Summary: React.FC<{ label: string; value: string; mono?: boolean }> = ({
     </pre>
   </div>
 )
+
+
+// ───────────────────────────────────────────────────────────────────────────
+// Bulk upload — drop-zone + results table (Phase 3)
+// ───────────────────────────────────────────────────────────────────────────
+
+
+const BulkUploadPanel: React.FC = () => {
+  const [open, setOpen] = useState(false)
+  const [busy, setBusy] = useState(false)
+  const [result, setResult] = useState<BulkResponse | null>(null)
+  const [error, setError] = useState<string | null>(null)
+  const [drag, setDrag] = useState(false)
+  const inputRef = React.useRef<HTMLInputElement>(null)
+
+  const upload = useCallback(async (f: File) => {
+    setBusy(true)
+    setError(null)
+    setResult(null)
+    try {
+      const r = await bulkTeach(f)
+      setResult(r)
+    } catch (exc) {
+      setError(exc instanceof Error ? exc.message : 'Upload failed')
+    } finally {
+      setBusy(false)
+    }
+  }, [])
+
+  const onFileChosen = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const f = e.target.files?.[0]
+    if (f) void upload(f)
+  }
+
+  const onDrop = (e: React.DragEvent) => {
+    e.preventDefault()
+    setDrag(false)
+    const f = e.dataTransfer.files?.[0]
+    if (f) void upload(f)
+  }
+
+  return (
+    <div
+      style={{
+        background: '#2a2a3e',
+        border: '1px solid #3a3a5c',
+        borderRadius: 8,
+        padding: 16,
+        marginBottom: 24,
+        maxWidth: 900,
+      }}
+    >
+      <button
+        onClick={() => setOpen((v) => !v)}
+        style={{
+          display: 'flex',
+          alignItems: 'center',
+          gap: 8,
+          width: '100%',
+          background: 'none',
+          border: 'none',
+          color: '#a5b4fc',
+          fontSize: 13,
+          fontWeight: 500,
+          cursor: 'pointer',
+          textAlign: 'left',
+        }}
+      >
+        <span style={{ display: 'inline-block', transition: 'transform 0.15s', transform: open ? 'rotate(90deg)' : 'rotate(0)' }}>
+          ›
+        </span>
+        <span>Bulk upload — JSON / CSV / SQL / ZIP-of-SQL</span>
+      </button>
+
+      {open && (
+        <div style={{ marginTop: 12 }}>
+          <div
+            onDragOver={(e) => { e.preventDefault(); setDrag(true) }}
+            onDragLeave={() => setDrag(false)}
+            onDrop={onDrop}
+            onClick={() => inputRef.current?.click()}
+            style={{
+              padding: 24,
+              border: `2px dashed ${drag ? '#7c6af7' : '#4a4a6c'}`,
+              borderRadius: 8,
+              background: drag ? 'rgba(124,106,247,0.08)' : 'rgba(26,26,46,0.5)',
+              textAlign: 'center',
+              fontSize: 12,
+              color: '#9090a8',
+              cursor: 'pointer',
+              transition: 'border-color 0.15s, background 0.15s',
+            }}
+          >
+            {busy
+              ? 'Uploading & analysing…'
+              : 'Drop a .json / .csv / .sql / .zip file here, or click to choose'}
+            <input
+              ref={inputRef}
+              type="file"
+              accept=".json,.csv,.sql,.zip"
+              style={{ display: 'none' }}
+              onChange={onFileChosen}
+            />
+          </div>
+
+          {error && (
+            <div
+              style={{
+                marginTop: 8,
+                padding: '6px 10px',
+                background: 'rgba(248,113,113,0.12)',
+                border: '1px solid #f87171',
+                color: '#f87171',
+                borderRadius: 4,
+                fontSize: 12,
+              }}
+            >
+              {error}
+            </div>
+          )}
+
+          {result && (
+            <div style={{ marginTop: 12 }}>
+              <div style={{ fontSize: 12, color: '#a5b4fc', marginBottom: 8 }}>
+                Format detected: <strong>{result.format_detected}</strong> ·
+                {' '}{result.saved} saved · {result.failed} failed
+              </div>
+              <div
+                style={{
+                  maxHeight: 240,
+                  overflow: 'auto',
+                  border: '1px solid #3a3a5c',
+                  borderRadius: 4,
+                }}
+              >
+                {result.items.map((it, i) => (
+                  <div
+                    key={i}
+                    style={{
+                      display: 'flex',
+                      gap: 8,
+                      padding: '4px 8px',
+                      borderBottom: '1px solid #3a3a5c',
+                      fontSize: 11,
+                      fontFamily: 'ui-monospace, monospace',
+                    }}
+                  >
+                    <span
+                      style={{
+                        color: it.status === 'saved' ? '#22c55e' : '#f87171',
+                        flexShrink: 0,
+                        width: 16,
+                      }}
+                    >
+                      {it.status === 'saved' ? '✓' : '✗'}
+                    </span>
+                    <span style={{ flex: 1, color: '#e0e0f0' }}>
+                      {it.user_input}
+                    </span>
+                    {it.status === 'saved' ? (
+                      <span style={{ color: '#9090a8' }}>
+                        +{it.learned_pattern_count} Q&A
+                      </span>
+                    ) : (
+                      <span style={{ color: '#f87171' }}>{it.error}</span>
+                    )}
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  )
+}
 
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
